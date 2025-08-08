@@ -1,22 +1,25 @@
-import subprocess
+import subprocess, sys
 
-# Ask for commit message
-commit_msg = input("Enter commit message: ").strip()
-if not commit_msg:
+def run(cmd, check=True):
+    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+
+msg = input("Enter commit message: ").strip()
+if not msg:
     print("❌ Commit message is required.")
-    exit(1)
+    sys.exit(1)
 
-# Stage all changes
-subprocess.run(["git", "add", "."], check=True)
+# Is there anything to commit?
+status = run(["git", "status", "--porcelain"], check=False)
+dirty = bool(status.stdout.strip())
 
-# Commit
-subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+if dirty:
+    run(["git", "add", "."], check=True)
+    run(["git", "commit", "-m", msg], check=True)
+else:
+    print("ℹ️  Nothing to commit; skipping commit step.")
 
-# Ensure branch is main
-subprocess.run(["git", "branch", "-M", "main"], check=True)
-
-# Push
-subprocess.run(["git", "push", "-u", "origin", "main"], check=True)
-
-print("✅ All changes committed and pushed.")
+# Ensure main & push
+run(["git", "branch", "-M", "main"], check=True)
+run(["git", "push", "-u", "origin", "main"], check=True)
+print("✅ Up to date with origin/main.")
 
