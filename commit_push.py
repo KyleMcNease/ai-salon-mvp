@@ -1,25 +1,25 @@
-import subprocess, sys
+#!/usr/bin/env python3
+import subprocess
 
-def run(cmd, check=True):
-    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+# Get the current branch name
+branch_name = subprocess.check_output(
+    ["git", "branch", "--show-current"]
+).decode().strip()
 
-msg = input("Enter commit message: ").strip()
-if not msg:
-    print("❌ Commit message is required.")
-    sys.exit(1)
+print(f"📍 Current branch: {branch_name}")
 
-# Is there anything to commit?
-status = run(["git", "status", "--porcelain"], check=False)
-dirty = bool(status.stdout.strip())
+# Stage all changes
+subprocess.run(["git", "add", "."], check=True)
 
-if dirty:
-    run(["git", "add", "."], check=True)
-    run(["git", "commit", "-m", msg], check=True)
-else:
-    print("ℹ️  Nothing to commit; skipping commit step.")
+# Commit with user-provided message
+commit_msg = input("Enter commit message: ")
+try:
+    subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+except subprocess.CalledProcessError:
+    print("⚠️  Nothing to commit — working tree clean.")
 
-# Ensure main & push
-run(["git", "branch", "-M", "main"], check=True)
-run(["git", "push", "-u", "origin", "main"], check=True)
-print("✅ Up to date with origin/main.")
+# Push to the current branch
+subprocess.run(["git", "push", "-u", "origin", branch_name], check=True)
+
+print(f"✅ Changes pushed to origin/{branch_name}")
 
