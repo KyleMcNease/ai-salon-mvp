@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# builds / output
+.next/
+out/
+dist/
+
+# env files (keep the example)
+.env
+.env.*
+!.env.local.example
+
+# misc
+.DS_Store
+*.log
+.vercel/
+.turbo/
+coverage/
+.idea/
+.eslintcache
+
