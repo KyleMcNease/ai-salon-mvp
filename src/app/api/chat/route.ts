@@ -1,4 +1,4 @@
-// src/app/api/chat/route.ts (provider-aware)
+// src/app/api/chat/route.ts (provider-aware, robust streaming)
 import { getAdapter } from '../../../lib/adapters';
 import type { Msg } from '../../../lib/adapters/types';
 
@@ -18,6 +18,24 @@ function sseHeaders() {
   } as Record<string, string>;
 }
 
+function isAsyncIterable(v: any): v is AsyncIterable<string> {
+  return v && typeof v[Symbol.asyncIterator] === 'function';
+}
+
+// Normalize adapter output (AsyncIterable<string> | Promise<...> | string) into AsyncIterable<string>
+function toAsyncIterable(out: unknown): AsyncIterable<string> {
+  return (async function* () {
+    const val = await out as any; // handles Promise-wrapped results
+    if (isAsyncIterable(val)) {
+      for await (const tok of val) {
+        if (tok != null) yield String(tok);
+      }
+      return;
+    }
+    if (val != null) yield String(val);
+  })();
+}
+
 async function streamAdapter(messages: Msg[], provider?: string, model?: string) {
   const adapter = getAdapter(provider);
   const encoder = new TextEncoder();
@@ -26,8 +44,9 @@ async function streamAdapter(messages: Msg[], provider?: string, model?: string)
     async start(controller) {
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'start', provider })}\n\n`));
       try {
-        const iter = adapter.complete({ messages, stream: true, model });
-        for await (const tok of iter as AsyncIterable<string>) {
+        const out = adapter.complete({ messages, stream: true, model });
+        const iter = toAsyncIterable(out);
+        for await (const tok of iter) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', tok })}\n\n`));
         }
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
@@ -49,8 +68,8 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({} as any));
     const prompt = String(body?.prompt || '').trim();
     const stream = body?.stream ?? true;
-    const provider = String(body?.provider || '').trim();
-    const model = body?.model as string | undefined;
+    const provider = (String(body?.provider || '').trim() || undefined) as string | undefined;
+    const model = (body?.model as string | undefined) || undefined;
     if (!prompt) return json({ error: "Missing 'prompt' in body" }, 400);
 
     const messages: Msg[] = [{ role: 'user', content: prompt }];
@@ -71,8 +90,8 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const prompt = (url.searchParams.get('prompt') || '').trim();
     const stream = url.searchParams.get('stream') === '1';
-    const provider = url.searchParams.get('provider') || undefined;
-    const model = url.searchParams.get('model') || undefined;
+    const provider = (url.searchParams.get('provider') || undefined) as string | undefined;
+    const model = (url.searchParams.get('model') || undefined) as string | undefined;
     if (!prompt) return json({ error: 'Missing ?prompt' }, 400);
 
     const messages: Msg[] = [{ role: 'user', content: prompt }];
@@ -87,3 +106,4 @@ export async function GET(req: Request) {
     return json({ error: 'Internal error' }, 500);
   }
 }
+
