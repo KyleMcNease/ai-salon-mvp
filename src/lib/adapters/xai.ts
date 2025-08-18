@@ -6,7 +6,7 @@ const client = new OpenAI({ apiKey: process.env.XAI_API_KEY, baseURL: 'https://a
 
 export const xaiAdapter: ChatAdapter = {
   async complete({ messages, stream = false, model }: { messages: Msg[]; stream?: boolean; model?: string }) {
-    const mdl = model || process.env.MODEL_NAME_XAI || 'grok-beta';
+    const mdl = model || process.env.MODEL_NAME_XAI || 'grok-4-0709';
 
     if (!stream) {
       const resp = await client.chat.completions.create({ model: mdl, messages, stream: false });
