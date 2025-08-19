@@ -3,58 +3,115 @@
 
 import { useRef, useState } from 'react';
 
-export type StreamEvent = { type: 'start' | 'delta' | 'done' | 'error'; data?: any };
+export type StreamEvent =
+  | { type: 'delta'; value: string }
+  | { type: 'done' }
+  | { type: 'error'; data: string };
 
-export function useStreamedChat(endpoint = '/api/chat') {
+type SendArgs = { prompt: string; provider?: string };
+type Options = { onEvent?: (e: StreamEvent) => void };
+
+export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
+  const onEvent =
+    typeof opts.onEvent === 'function' ? opts.onEvent : (_e: StreamEvent) => {};
+  const ctrlRef = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ctrlRef = useRef<AbortController | null>(null);
 
-  async function send(prompt: string, onEvent: (ev: StreamEvent) => void, opts?: { model?: string; provider?: string }) {
-    if (busy) return;
+  async function* send({ prompt, provider }: SendArgs) {
     setBusy(true);
     setError(null);
+
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
+
     try {
-      const res = await fetch(`${endpoint}?stream=1`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, model: opts?.model, provider: opts?.provider, stream: true }),
-        signal: ctrl.signal,
+      // Always stream in the UI; the API returns Anthropic/OpenAI/xAI SSE verbatim
+      const qs = new URLSearchParams({
+        prompt,
+        stream: '1',
+        ...(provider ? { provider } : {}),
       });
+
+      const res = await fetch(`${basePath}?${qs.toString()}`, {
+        method: 'GET',
+        signal: ctrl.signal,
+        headers: { Accept: 'text/event-stream' },
+      });
+
       if (!res.ok || !res.body) {
-        const raw = await res.text().catch(() => '');
-        throw new Error(raw || `HTTP ${res.status}`);
+        const msg = `HTTP ${res.status}`;
+        setError(msg);
+        onEvent({ type: 'error', data: msg });
+        return;
       }
+
       const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { value, done } = await reader.read();
+      const td = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-        for (const part of parts) {
-          if (!part.startsWith('data:')) continue;
-          const payload = part.slice(5).trim();
-          if (!payload) continue;
-          if (payload === '[DONE]') { onEvent({ type: 'done' }); continue; }
+        buf += td.decode(value, { stream: true });
+
+        // Split SSE frames on blank line
+        let i;
+        while ((i = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+
+          // Parse lines like:
+          // event: content_block_delta
+          // data: {"type":"content_block_delta",...}
+          let eventType: string | null = null;
+          let dataLine: string | null = null;
+
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('event:')) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              // keep last data line if multiple
+              dataLine = line.slice(5).trim();
+            }
+          }
+
+          if (!dataLine) continue;
+
+          // Anthropic sends JSON in data
           try {
-            const msg = JSON.parse(payload);
-            if (msg.type === 'start') onEvent({ type: 'start', data: msg });
-            else if (msg.type === 'delta') onEvent({ type: 'delta', data: msg });
-            else if (msg.type === 'error') onEvent({ type: 'error', data: msg });
+            const obj = JSON.parse(dataLine);
+
+            // Most useful incremental text lives in content_block_delta
+            if (
+              (eventType === 'content_block_delta' || obj?.type === 'content_block_delta') &&
+              obj?.delta?.type === 'text_delta' &&
+              typeof obj?.delta?.text === 'string'
+            ) {
+              const chunk = obj.delta.text as string;
+              onEvent({ type: 'delta', value: chunk });
+              yield { type: 'delta', value: chunk } as StreamEvent;
+            }
+
+            if (eventType === 'message_stop' || obj?.type === 'message_stop') {
+              onEvent({ type: 'done' });
+              yield { type: 'done' } as StreamEvent;
+            }
           } catch {
-            // ignore
+            // If not JSON (some providers send plain text chunks), forward as delta
+            onEvent({ type: 'delta', value: dataLine });
+            yield { type: 'delta', value: dataLine } as StreamEvent;
           }
         }
       }
+
+      onEvent({ type: 'done' });
+      yield { type: 'done' } as StreamEvent;
     } catch (e: any) {
       const message = e?.message || 'Stream failed';
       setError(message);
       onEvent({ type: 'error', data: message });
+      yield { type: 'error', data: message } as StreamEvent;
     } finally {
       setBusy(false);
       ctrlRef.current = null;
@@ -69,3 +126,4 @@ export function useStreamedChat(endpoint = '/api/chat') {
 
   return { send, abort, busy, error };
 }
+
