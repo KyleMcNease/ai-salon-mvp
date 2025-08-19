@@ -9,5 +9,7 @@ export const adapters: Record<string, ChatFn> = {
   gpt: openaiChat,
   claude: (args) => anthropicAdapter.chat(args),
   grok: xaiChat,
+  // Alias: @opus -> Anthropic Opus 4.1
+  opus: (args) => anthropicAdapter.chat({ ...args, model: 'claude-opus-4-1-20250805' }),
 };
 
