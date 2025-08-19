@@ -8,10 +8,12 @@ import ModelFooter from '@/components/ModelFooter';
 
 type Msg = { role: 'user' | 'assistant'; content: string };
 
-type Provider = 'gpt' | 'claude' | 'grok';
+// Added 'opus' here
+type Provider = 'gpt' | 'claude' | 'grok' | 'opus';
 
 function parseProvider(raw: string, fallback: Provider = 'gpt') {
-  const m = raw.match(/^@(gpt|claude|grok)/i);
+  // Include opus in the @-mention regex
+  const m = raw.match(/^@(gpt|claude|grok|opus)/i);
   if (!m) return { provider: fallback, prompt: raw.trim() };
   return { provider: m[1].toLowerCase() as Provider, prompt: raw.slice(m[0].length).trim() };
 }
@@ -56,9 +58,7 @@ export default function Page() {
         {messages.map((m, i) => (
           <div
             key={i}
-            className={
-              m.role === 'user' ? 'text-blue-600' : 'text-green-700'
-            }
+            className={m.role === 'user' ? 'text-blue-600' : 'text-green-700'}
           >
             <strong>{m.role}:</strong> {m.content}
           </div>
