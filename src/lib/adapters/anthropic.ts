@@ -17,7 +17,7 @@ function mapToAnthropic(messages: Msg[]) {
 
 export const anthropicAdapter: ChatAdapter = {
   async complete({ messages, stream = false, model }: { messages: Msg[]; stream?: boolean; model?: string }) {
-    const mdl = model || process.env.MODEL_NAME_ANTHROPIC || 'claude-3-5-sonnet-20240620';
+    const mdl = model || process.env.MODEL_NAME_ANTHROPIC || 'claude-sonnet-4-20250514';
     const { system, messages: mapped } = mapToAnthropic(messages);
 
     if (!stream) {
