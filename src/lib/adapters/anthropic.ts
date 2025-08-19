@@ -1,39 +1,57 @@
 // src/lib/adapters/anthropic.ts
-import Anthropic from '@anthropic-ai/sdk';
-import type { ChatAdapter, Msg } from './types';
+// Minimal, robust Anthropic adapter for Claude 4 family.
+// Non-stream returns { content: string }.
+// Stream returns a ReadableStream suitable for SSE framing in the route.
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+export type ChatArgs = { prompt: string; stream?: boolean; model?: string };
 
-function mapToAnthropic(messages: Msg[]) {
-  const sys: string[] = [];
-  const mapped: { role: 'user' | 'assistant'; content: string }[] = [];
-  for (const m of messages) {
-    if (m.role === 'system') sys.push(m.content);
-    else if (m.role === 'user' || m.role === 'assistant') mapped.push({ role: m.role, content: m.content });
-  }
-  const system = sys.length ? sys.join('\n') : undefined;
-  return { system, messages: mapped };
-}
+export const anthropicAdapter = {
+  async chat({ prompt, stream = false, model }: ChatArgs): Promise<any> {
+    const mdl =
+      model ||
+      process.env.MODEL_NAME_ANTHROPIC ||
+      'claude-sonnet-4-20250514';
 
-export const anthropicAdapter: ChatAdapter = {
-  async complete({ messages, stream = false, model }: { messages: Msg[]; stream?: boolean; model?: string }) {
-    const mdl = model || process.env.MODEL_NAME_ANTHROPIC || 'claude-sonnet-4-20250514';
-    const { system, messages: mapped } = mapToAnthropic(messages);
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('Missing ANTHROPIC_API_KEY');
 
-    if (!stream) {
-      const resp = await client.messages.create({ model: mdl, max_tokens: 1024, stream: false, system, messages: mapped });
-      const parts = resp.content?.map((c: any) => (c.type === 'text' ? c.text : '')).join('') ?? '';
-      return parts;
+    const body: any = {
+      model: mdl,
+      max_tokens: 512,
+      messages: [{ role: 'user', content: prompt }],
+    };
+    if (stream) body.stream = true;
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Anthropic ${res.status}: ${errText}`);
     }
 
-    const streamResp = await client.messages.create({ model: mdl, max_tokens: 1024, stream: true, system, messages: mapped });
-    async function* run() {
-      for await (const ev of streamResp) {
-        if (ev.type === 'content_block_delta' && (ev as any).delta?.type === 'text_delta') {
-          yield (ev as any).delta.text as string;
-        }
-      }
+    if (stream) {
+      // Return the raw ReadableStream; route.ts wraps it as SSE
+      const b = res.body;
+      if (!b) throw new Error('No stream body from Anthropic');
+      return b;
     }
-    return run();
+
+    // Non-stream: normalize to { content: string }
+    const json = await res.json().catch(() => ({} as any));
+    // Claude Messages API returns content array with blocks; first block is usually the text
+    const text =
+      Array.isArray(json?.content) && json.content.length
+        ? (json.content[0]?.text ?? '')
+        : json?.output_text ?? json?.text ?? '';
+    return { content: String(text ?? '') };
   },
 };
+
