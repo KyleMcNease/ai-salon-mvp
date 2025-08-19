@@ -1,18 +1,16 @@
 // src/app/api/chat/route.ts
-import { NextRequest } from 'next/server';
+import type { NextRequest } from 'next/server';
 import { adapters } from '@/lib/adapters';
 
 export const runtime = 'edge';
 
-function toAsyncIterable(stream: any): AsyncIterable<Uint8Array> {
-  // If already an async iterable, just return it
-  if (stream && typeof stream[Symbol.asyncIterator] === 'function') {
-    return stream as AsyncIterable<Uint8Array>;
+// Normalize any provider output into an AsyncIterable<Uint8Array>
+function toAsyncIterable(src: any): AsyncIterable<Uint8Array> {
+  if (src && typeof src[Symbol.asyncIterator] === 'function') {
+    return src as AsyncIterable<Uint8Array>;
   }
-
-  // If it's a Response body (ReadableStream), wrap it
-  if (stream && typeof (stream as any).getReader === 'function') {
-    const reader = (stream as ReadableStream<Uint8Array>).getReader();
+  if (src && typeof src.getReader === 'function') {
+    const reader = (src as ReadableStream<Uint8Array>).getReader();
     return {
       async *[Symbol.asyncIterator]() {
         while (true) {
@@ -23,49 +21,50 @@ function toAsyncIterable(stream: any): AsyncIterable<Uint8Array> {
       },
     };
   }
-
-  // If it's a plain string, yield it
-  if (typeof stream === 'string') {
+  if (typeof src === 'string') {
+    const enc = new TextEncoder();
     return {
       async *[Symbol.asyncIterator]() {
-        yield new TextEncoder().encode(stream);
+        yield enc.encode(src);
       },
     };
   }
-
-  // Fallback: nothing to stream
-  return {
-    async *[Symbol.asyncIterator]() {},
-  };
+  return { async *[Symbol.asyncIterator]() {} };
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const prompt = searchParams.get('prompt') || '';
-  const provider = searchParams.get('provider') || 'gpt';
+  const provider = (searchParams.get('provider') || 'gpt').toLowerCase();
   const stream = searchParams.get('stream') === '1';
 
   const adapter = adapters[provider];
   if (!adapter) {
-    return new Response(`Unknown provider: ${provider}`, { status: 400 });
+    return new Response('Unknown provider: ' + provider, {
+      status: 400,
+      headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
+    });
   }
 
   try {
     if (stream) {
+      // STREAMING: forward provider SSE verbatim (no extra "data:" prefixing)
       const raw = await adapter({ prompt, stream: true });
       const iterable = toAsyncIterable(raw);
 
-      const encoder = new TextEncoder();
       const body = new ReadableStream({
         async start(controller) {
-          for await (const chunk of iterable) {
-            controller.enqueue(
-              typeof chunk === 'string'
-                ? encoder.encode(`data: ${chunk}\n\n`)
-                : chunk
-            );
+          try {
+            for await (const chunk of iterable) {
+              // Most providers (Anthropic/OpenAI/xAI) already emit SSE lines.
+              // Pass chunks through unchanged to avoid "data: event: ..." corruption.
+              controller.enqueue(
+                chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk))
+              );
+            }
+          } finally {
+            controller.close();
           }
-          controller.close();
         },
       });
 
@@ -76,15 +75,26 @@ export async function GET(req: NextRequest) {
           Connection: 'keep-alive',
         },
       });
-    } else {
-      const result = await adapter({ prompt, stream: false });
-      return new Response(JSON.stringify(result), {
-        headers: { 'Content-Type': 'application/json' },
-      });
     }
+
+    // NON-STREAM: always return JSON { content: string }
+    const result = await adapter({ prompt, stream: false });
+
+    const content =
+      typeof result === 'string'
+        ? result
+        : (result && typeof result === 'object' && 'content' in result)
+        ? String((result as any).content ?? '')
+        : (result && typeof result === 'object' && 'text' in result)
+        ? String((result as any).text ?? '')
+        : String(result ?? '');
+
+    return Response.json({ content }, { status: 200 });
   } catch (err: any) {
-    console.error(err);
-    return new Response(`Error: ${err.message || String(err)}`, { status: 500 });
+    return Response.json(
+      { error: err?.message || String(err) },
+      { status: 500 }
+    );
   }
 }
 

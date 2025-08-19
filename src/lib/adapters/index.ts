@@ -1,14 +1,13 @@
 // src/lib/adapters/index.ts
-import { openaiAdapter } from './openai';
+import { chat as openaiChat } from './openai';
 import { anthropicAdapter } from './anthropic';
-import { xaiAdapter } from './xai';
-import type { ChatAdapter, Provider } from './types';
+import { chat as xaiChat } from './xai';
 
-export function getAdapter(provider: string | undefined): ChatAdapter {
-  const p = String(provider || '').toLowerCase();
-  if (p === 'claude') return anthropicAdapter;
-  if (p === 'grok') return xaiAdapter;
-  return openaiAdapter; // default: OpenAI
-}
+type ChatFn = (args: { prompt: string; stream?: boolean; model?: string }) => Promise<any>;
 
-export type { ChatAdapter, Provider } from './types';
+export const adapters: Record<string, ChatFn> = {
+  gpt: openaiChat,
+  claude: (args) => anthropicAdapter.chat(args),
+  grok: xaiChat,
+};
+
