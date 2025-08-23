@@ -24,3 +24,33 @@ export const openaiAdapter: ChatAdapter = {
     return run();
   },
 };
+
+// Legacy chat function for index.ts compatibility
+export async function chat({ prompt, stream = false, model }: { prompt: string; stream?: boolean; model?: string }) {
+  const messages = [{ role: 'user' as const, content: prompt }];
+  
+  if (!stream) {
+    const result = await openaiAdapter.complete({ messages, stream: false, model });
+    return { content: result };
+  }
+
+  // For streaming, return ReadableStream in SSE format
+  const encoder = new TextEncoder();
+  const iterable = await openaiAdapter.complete({ messages, stream: true, model });
+  
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const chunk of iterable as AsyncIterable<string>) {
+          // Format as SSE with data: prefix for consistency
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', content: chunk })}\n\n`));
+        }
+        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+      } catch (error) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: String(error) })}\n\n`));
+      } finally {
+        controller.close();
+      }
+    },
+  });
+}

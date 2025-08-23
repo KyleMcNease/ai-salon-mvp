@@ -56,14 +56,16 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
         buf += td.decode(value, { stream: true });
 
         // Split SSE frames on blank line
-        let i;
-        while ((i = buf.indexOf('\n\n')) !== -1) {
-          const frame = buf.slice(0, i);
-          buf = buf.slice(i + 2);
-
+        let parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        
+        for (const frame of parts) {
           // Parse lines like:
           // event: content_block_delta
           // data: {"type":"content_block_delta",...}
+          // OR just:
+          // data: {"type":"delta","content":"..."}
+          // data: [DONE]
           let eventType: string | null = null;
           let dataLine: string | null = null;
 
@@ -78,11 +80,18 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
 
           if (!dataLine) continue;
 
-          // Anthropic sends JSON in data
+          // Handle [DONE] termination
+          if (dataLine === '[DONE]') {
+            onEvent({ type: 'done' });
+            yield { type: 'done' } as StreamEvent;
+            continue;
+          }
+
+          // Try to parse as JSON
           try {
             const obj = JSON.parse(dataLine);
 
-            // Most useful incremental text lives in content_block_delta
+            // Anthropic format: content_block_delta
             if (
               (eventType === 'content_block_delta' || obj?.type === 'content_block_delta') &&
               obj?.delta?.type === 'text_delta' &&
@@ -92,8 +101,20 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
               onEvent({ type: 'delta', value: chunk });
               yield { type: 'delta', value: chunk } as StreamEvent;
             }
-
-            if (eventType === 'message_stop' || obj?.type === 'message_stop') {
+            // OpenAI/xAI format: { type: 'delta', content: '...' }
+            else if (obj?.type === 'delta' && typeof obj?.content === 'string') {
+              const chunk = obj.content as string;
+              onEvent({ type: 'delta', value: chunk });
+              yield { type: 'delta', value: chunk } as StreamEvent;
+            }
+            // Error handling
+            else if (obj?.type === 'error') {
+              const errMsg = obj?.error || obj?.message || 'Stream error';
+              onEvent({ type: 'error', data: errMsg });
+              yield { type: 'error', data: errMsg } as StreamEvent;
+            }
+            // Completion events
+            else if (eventType === 'message_stop' || obj?.type === 'message_stop') {
               onEvent({ type: 'done' });
               yield { type: 'done' } as StreamEvent;
             }
@@ -126,4 +147,3 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
 
   return { send, abort, busy, error };
 }
-

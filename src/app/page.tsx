@@ -54,17 +54,24 @@ export default function Page() {
 
   return (
     <main className="flex flex-col min-h-screen">
+      <header className="p-4 border-b">
+        <h1 className="text-2xl font-semibold">AI Salon</h1>
+      </header>
       <div className="flex-1 flex flex-col p-4 space-y-2 overflow-y-auto">
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            className={m.role === 'user' ? 'text-blue-600' : 'text-green-700'}
-          >
-            <strong>{m.role}:</strong> {m.content}
-          </div>
-        ))}
+        {messages.length === 0 ? (
+          <div className="text-neutral-500">Start the conversation below.</div>
+        ) : (
+          messages.map((m, i) => (
+            <div
+              key={i}
+              className={m.role === 'user' ? 'text-blue-600' : 'text-green-700'}
+            >
+              <strong>{m.role}:</strong> {m.content}
+            </div>
+          ))
+        )}
       </div>
-      <Composer onSend={onSend} busy={busy} onAbort={abort} error={error} />
+      <Composer onSend={onSend} busy={busy} />
       <ModelFooter />
     </main>
   );
