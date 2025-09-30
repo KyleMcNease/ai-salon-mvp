@@ -1,0 +1,332 @@
+openapi: 3.1.0
+info:
+  title: AI Salon Memory Service API
+  version: 0.1.0
+  description: |
+    Contract for the AI Salon unified memory service. This spec is an initial draft and will evolve during Milestone M1.
+servers:
+  - url: https://memory-service.dev.local
+    description: Local mock endpoint served by Next.js
+  - url: https://memory-service.prod.example.com
+    description: AWS Lambda + API Gateway deployment
+
+components:
+  securitySchemes:
+    MemoryServiceKey:
+      type: apiKey
+      name: x-memory-service-key
+      in: header
+
+  schemas:
+    Envelope:
+      type: object
+      required: [version, tenant_id, session_id, actor, payload]
+      properties:
+        version:
+          type: string
+          example: "2025-09-01"
+        tenant_id:
+          type: string
+        session_id:
+          type: string
+        actor:
+          type: string
+          description: Human or agent identifier issuing the call.
+        domain_tags:
+          type: array
+          items:
+            type: string
+        model_caps:
+          $ref: '#/components/schemas/ModelCapabilities'
+        context_version:
+          type: integer
+          description: Incremental version per (tenant, session, actor).
+        compression:
+          type: string
+          enum: [none, gzip, brotli]
+        payload:
+          $ref: '#/components/schemas/Payload'
+
+    ModelCapabilities:
+      type: object
+      properties:
+        max_context_tokens:
+          type: integer
+        modalities:
+          type: array
+          items: { type: string }
+        supports_tools:
+          type: boolean
+        supports_audio:
+          type: boolean
+
+    Payload:
+      type: object
+      properties:
+        context_entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextEntry'
+        plan_updates:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanUpdate'
+        memory_nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemoryNode'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventRecord'
+        media_artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaArtifact'
+
+    ContextEntry:
+      type: object
+      required: [id, role, content, created_at]
+      properties:
+        id:
+          type: string
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+        summary:
+          type: string
+        importance:
+          type: number
+          format: float
+        created_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+
+    PlanUpdate:
+      type: object
+      required: [plan_id, status]
+      properties:
+        plan_id:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, IN_PROGRESS, BLOCKED, COMPLETED, CANCELLED]
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanStep'
+        increments:
+          type: array
+          description: Diffs since last version.
+          items:
+            type: object
+            additionalProperties: true
+
+    PlanStep:
+      type: object
+      required: [id, seq, title, status]
+      properties:
+        id:
+          type: string
+        seq:
+          type: integer
+        title:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, RUNNING, VERIFYING, DONE, FAILED, INTERRUPTED]
+        owner_model:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        output:
+          type: object
+          additionalProperties: true
+
+    MemoryNode:
+      type: object
+      required: [id, type, content]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [FACT, PREFERENCE, WORKFLOW, ERROR, SUMMARY]
+        content:
+          type: string
+        importance:
+          type: number
+          format: float
+        decay_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+
+    EventRecord:
+      type: object
+      required: [id, action, created_at]
+      properties:
+        id:
+          type: string
+        action:
+          type: string
+          enum: [PLAN, EXECUTE, VERIFY, INTERRUPT, VOICE_READY, BROADCAST]
+        created_at:
+          type: string
+          format: date-time
+        actor:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+
+    MediaArtifact:
+      type: object
+      required: [id, type, uri]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [AUDIO, IMAGE, VIDEO, FILE]
+        uri:
+          type: string
+          format: uri
+        mime_type:
+          type: string
+        duration_ms:
+          type: integer
+        metadata:
+          type: object
+          additionalProperties: true
+
+  responses:
+    Ack:
+      description: Generic acknowledgement response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok:
+                type: boolean
+              context_version:
+                type: integer
+              truncation_reason:
+                type: string
+                nullable: true
+              next_cursor:
+                type: string
+                nullable: true
+
+paths:
+  /memory/save-context:
+    post:
+      summary: Persist context entries and associated plan/memory updates
+      security:
+        - MemoryServiceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'
+  /memory/retrieve-context:
+    post:
+      summary: Retrieve context snapshot or delta for a model session
+      security:
+        - MemoryServiceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Envelope'
+                - type: object
+                  properties:
+                    payload:
+                      allOf:
+                        - $ref: '#/components/schemas/Payload'
+                        - type: object
+                          properties:
+                            mode:
+                              type: string
+                              enum: [full, summary, delta]
+                              default: full
+                            window_target_tokens:
+                              type: integer
+                              default: 4000
+      responses:
+        '200':
+          description: Context envelope response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+  /memory/save-plan:
+    post:
+      summary: Persist Manus-style plan updates
+      security:
+        - MemoryServiceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'
+  /memory/resolve-conflict:
+    post:
+      summary: Submit human adjudication for conflicting model outputs
+      security:
+        - MemoryServiceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Envelope'
+                - type: object
+                  properties:
+                    payload:
+                      type: object
+                      required: [resolution]
+                      properties:
+                        conflict_id:
+                          type: string
+                        resolution:
+                          type: string
+                        notes:
+                          type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'
+  /memory/broadcast-update:
+    post:
+      summary: Broadcast shared knowledge or external updates to subscribed agents
+      security:
+        - MemoryServiceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'

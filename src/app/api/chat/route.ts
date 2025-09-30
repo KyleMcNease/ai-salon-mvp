@@ -1,13 +1,27 @@
 // src/app/api/chat/route.ts
+import { randomUUID } from 'crypto';
 import type { NextRequest } from 'next/server';
+
 import { adapters } from '@/lib/adapters';
+import { MemoryServiceClient } from '@/lib/memoryService';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
-// Normalize any provider output into an AsyncIterable<Uint8Array>
-function toAsyncIterable(src: any): AsyncIterable<Uint8Array> {
+type ChatRequest = {
+  prompt: string;
+  provider?: string;
+  stream?: boolean;
+  sessionId?: string;
+  tenantId?: string;
+  model?: string;
+};
+
+const TEXT_DECODER = new TextDecoder();
+const TEXT_ENCODER = new TextEncoder();
+
+function toAsyncIterable(src: any): AsyncIterable<Uint8Array | string> {
   if (src && typeof src[Symbol.asyncIterator] === 'function') {
-    return src as AsyncIterable<Uint8Array>;
+    return src as AsyncIterable<Uint8Array | string>;
   }
   if (src && typeof src.getReader === 'function') {
     const reader = (src as ReadableStream<Uint8Array>).getReader();
@@ -22,79 +36,258 @@ function toAsyncIterable(src: any): AsyncIterable<Uint8Array> {
     };
   }
   if (typeof src === 'string') {
-    const enc = new TextEncoder();
     return {
       async *[Symbol.asyncIterator]() {
-        yield enc.encode(src);
+        yield src;
       },
     };
   }
   return { async *[Symbol.asyncIterator]() {} };
 }
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const prompt = searchParams.get('prompt') || '';
-  const provider = (searchParams.get('provider') || 'gpt').toLowerCase();
-  const stream = searchParams.get('stream') === '1';
+function encodeChunk(chunk: Uint8Array | string) {
+  if (typeof chunk === 'string') {
+    return TEXT_ENCODER.encode(chunk);
+  }
+  return chunk;
+}
 
+function extractDelta(frame: string): string | null {
+  const lines = frame.split('\n');
+  let dataLine: string | null = null;
+  let eventType: string | null = null;
+
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      eventType = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      dataLine = line.slice(5).trim();
+    }
+  }
+
+  if (!dataLine || dataLine === '[DONE]') return null;
+
+  try {
+    const obj = JSON.parse(dataLine);
+    if (
+      (eventType === 'content_block_delta' || obj?.type === 'content_block_delta') &&
+      obj?.delta?.type === 'text_delta' &&
+      typeof obj?.delta?.text === 'string'
+    ) {
+      return obj.delta.text;
+    }
+    if (obj?.type === 'delta' && typeof obj?.content === 'string') {
+      return obj.content;
+    }
+  } catch {
+    return dataLine;
+  }
+
+  return null;
+}
+
+function renderHistoryPrompt(entries: { role: string; content: string }[], latest: string) {
+  if (!entries.length) return latest;
+  const conversation = entries
+    .map((entry) => `${entry.role.toUpperCase()}: ${entry.content}`)
+    .join('\n');
+  return `${conversation}\nUSER: ${latest}`;
+}
+
+export async function POST(req: NextRequest) {
+  let body: ChatRequest;
+  try {
+    body = (await req.json()) as ChatRequest;
+  } catch (error) {
+    return new Response('Invalid JSON payload', { status: 400 });
+  }
+
+  const prompt = body.prompt?.trim() ?? '';
+  if (!prompt) {
+    return new Response('prompt required', { status: 400 });
+  }
+
+  const provider = (body.provider || 'gpt').toLowerCase();
   const adapter = adapters[provider];
   if (!adapter) {
     return new Response('Unknown provider: ' + provider, {
       status: 400,
-      headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     });
   }
 
+  const sessionId = body.sessionId || randomUUID();
+  const tenantId = body.tenantId || 'default';
+  const stream = body.stream !== false;
+
+  const memoryClient = new MemoryServiceClient();
+  const now = new Date().toISOString();
+  const userMessageId = randomUUID();
+  const assistantMessageId = randomUUID();
+
   try {
-    if (stream) {
-      // STREAMING: forward provider SSE verbatim (no extra "data:" prefixing)
-      const raw = await adapter({ prompt, stream: true });
-      const iterable = toAsyncIterable(raw);
+    await memoryClient.saveContext({
+      version: '2025-09-01',
+      tenant_id: tenantId,
+      session_id: sessionId,
+      actor: tenantId,
+      payload: {
+        context_entries: [
+          {
+            id: userMessageId,
+            role: 'user',
+            content: prompt,
+            created_at: now,
+            metadata: { source: 'chat-api', provider },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    console.error('failed to persist user message', error);
+  }
 
-      const body = new ReadableStream({
-        async start(controller) {
-          try {
-            for await (const chunk of iterable) {
-              // Most providers (Anthropic/OpenAI/xAI) already emit SSE lines.
-              // Pass chunks through unchanged to avoid "data: event: ..." corruption.
-              controller.enqueue(
-                chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk))
-              );
-            }
-          } finally {
-            controller.close();
-          }
+  let historyPrompt = prompt;
+  try {
+    const envelope = await memoryClient.retrieveContext({
+      version: '2025-09-01',
+      tenant_id: tenantId,
+      session_id: sessionId,
+      actor: provider,
+      payload: { mode: 'summary', window_target_tokens: 4000 },
+    });
+    const entries = envelope.payload?.context_entries ?? [];
+    const formatted = entries
+      .filter((entry) => entry.id !== userMessageId)
+      .map((entry) => ({ role: entry.role, content: entry.content }));
+    historyPrompt = renderHistoryPrompt(formatted, prompt);
+  } catch (error) {
+    console.warn('retrieve-context failed, proceeding with user prompt only', error);
+  }
+
+  try {
+    if (!stream) {
+      const result = await adapter({ prompt: historyPrompt, stream: false, model: body.model });
+
+      const content =
+        typeof result === 'string'
+          ? result
+          : (result && typeof result === 'object' && 'content' in result)
+          ? String((result as any).content ?? '')
+          : (result && typeof result === 'object' && 'text' in result)
+          ? String((result as any).text ?? '')
+          : String(result ?? '');
+
+      await memoryClient.saveContext({
+        version: '2025-09-01',
+        tenant_id: tenantId,
+        session_id: sessionId,
+        actor: provider,
+        payload: {
+          context_entries: [
+            {
+              id: assistantMessageId,
+              role: 'assistant',
+              content,
+              created_at: new Date().toISOString(),
+              metadata: { provider },
+            },
+          ],
         },
       });
 
-      return new Response(body, {
-        headers: {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-        },
-      });
+      return Response.json({ content, sessionId, tenantId }, { status: 200 });
     }
 
-    // NON-STREAM: always return JSON { content: string }
-    const result = await adapter({ prompt, stream: false });
+    const raw = await adapter({ prompt: historyPrompt, stream: true, model: body.model });
+    const iterable = toAsyncIterable(raw);
+    let buffer = '';
+    let assistantContent = '';
 
-    const content =
-      typeof result === 'string'
-        ? result
-        : (result && typeof result === 'object' && 'content' in result)
-        ? String((result as any).content ?? '')
-        : (result && typeof result === 'object' && 'text' in result)
-        ? String((result as any).text ?? '')
-        : String(result ?? '');
+    const bodyStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          for await (const chunk of iterable) {
+            const bytes = encodeChunk(chunk);
+            controller.enqueue(bytes);
 
-    return Response.json({ content }, { status: 200 });
-  } catch (err: any) {
-    return Response.json(
-      { error: err?.message || String(err) },
-      { status: 500 }
-    );
+            const text = typeof chunk === 'string' ? chunk : TEXT_DECODER.decode(bytes, { stream: true });
+            buffer += text;
+
+            const frames = buffer.split('\n\n');
+            buffer = frames.pop() || '';
+            for (const frame of frames) {
+              const delta = extractDelta(frame);
+              if (delta) assistantContent += delta;
+            }
+          }
+          if (buffer) {
+            const delta = extractDelta(buffer);
+            if (delta) assistantContent += delta;
+          }
+        } catch (error) {
+          console.error('stream relay error', error);
+          controller.enqueue(TEXT_ENCODER.encode(`data: ${JSON.stringify({ type: 'error', error: String(error) })}\n\n`));
+        } finally {
+          controller.enqueue(TEXT_ENCODER.encode('data: [DONE]\n\n'));
+          controller.close();
+          try {
+            if (assistantContent.trim()) {
+              await memoryClient.saveContext({
+                version: '2025-09-01',
+                tenant_id: tenantId,
+                session_id: sessionId,
+                actor: provider,
+                payload: {
+                  context_entries: [
+                    {
+                      id: assistantMessageId,
+                      role: 'assistant',
+                      content: assistantContent,
+                      created_at: new Date().toISOString(),
+                      metadata: { provider },
+                    },
+                  ],
+                },
+              });
+            }
+          } catch (error) {
+            console.error('failed to persist assistant message', error);
+          }
+        }
+      },
+    });
+
+    return new Response(bodyStream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Session-Id': sessionId,
+        'X-Tenant-Id': tenantId,
+      },
+    });
+  } catch (error: any) {
+    console.error('chat route failed', error);
+    return Response.json({ error: error?.message || String(error) }, { status: 500 });
   }
 }
 
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const payload: ChatRequest = {
+    prompt: searchParams.get('prompt') || '',
+    provider: searchParams.get('provider') || undefined,
+    stream: searchParams.get('stream') === '1',
+    sessionId: searchParams.get('sessionId') || undefined,
+    tenantId: searchParams.get('tenantId') || undefined,
+  };
+
+  const request = new Request(req.url, {
+    method: 'POST',
+    headers: req.headers,
+    body: JSON.stringify(payload),
+  });
+
+  return POST(request as unknown as NextRequest);
+}

@@ -1,5 +1,7 @@
 # AI Salon (SCRIBE) - Multi-LLM Chat Interface
 
+> **2025-09 Update:** For the latest architecture and milestone plan, see `docs/AI_Salon_SCRIBE_PRD.md` and `docs/memory-service-openapi.yaml`.
+
 ## 🎯 Overview
 
 AI Salon is a sophisticated chat interface that enables seamless interaction with multiple Large Language Models (OpenAI, Anthropic, xAI) with features including:

@@ -1,0 +1,168 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Profile {
+  id          String    @id @default(cuid())
+  email       String?   @unique
+  handle      String?   @unique
+  displayName String?
+  sessions    Session[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Session {
+  id           String      @id @default(cuid())
+  title        String?
+  status       SessionStatus @default(ACTIVE)
+  ownerId      String?
+  owner        Profile?   @relation(fields: [ownerId], references: [id])
+  metadata     Json?
+  messages     Message[]
+  plans        Plan[]
+  memoryNodes  MemoryNode[]
+  artifacts    Artifact[]
+  audits       AuditLog[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+enum SessionStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role        MessageRole
+  model       String?
+  content     String
+  tokensIn    Int?
+  tokensOut   Int?
+  cost        Decimal?  @db.Decimal(10, 4)
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  artifacts   Artifact[]
+}
+
+enum MessageRole {
+  system
+  user
+  assistant
+  tool
+}
+
+model Plan {
+  id          String      @id @default(cuid())
+  sessionId   String
+  session     Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  title       String?
+  status      PlanStatus  @default(PENDING)
+  ownerModel  String?
+  description String?
+  currentStep Int?        @default(0)
+  metadata    Json?
+  steps       PlanStep[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+enum PlanStatus {
+  PENDING
+  IN_PROGRESS
+  BLOCKED
+  COMPLETED
+  CANCELLED
+}
+
+model PlanStep {
+  id          String     @id @default(cuid())
+  planId      String
+  plan        Plan       @relation(fields: [planId], references: [id], onDelete: Cascade)
+  seq         Int
+  ownerModel  String?
+  title       String
+  status      PlanStepStatus @default(PENDING)
+  payload     Json?
+  output      Json?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@unique([planId, seq])
+}
+
+enum PlanStepStatus {
+  PENDING
+  RUNNING
+  VERIFYING
+  DONE
+  FAILED
+  INTERRUPTED
+}
+
+model MemoryNode {
+  id           String    @id @default(cuid())
+  sessionId    String
+  session      Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type         MemoryNodeType @default(FACT)
+  content      String
+  importance   Float     @default(0.5)
+  decayAt      DateTime?
+  metadata     Json?
+  embedding    Float[]   @default([])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+enum MemoryNodeType {
+  FACT
+  PREFERENCE
+  WORKFLOW
+  ERROR
+  SUMMARY
+}
+
+model Artifact {
+  id          String   @id @default(cuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  messageId   String?
+  message     Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  type        ArtifactType
+  url         String?
+  storageKey  String?
+  mimeType    String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+}
+
+enum ArtifactType {
+  AUDIO
+  IMAGE
+  VIDEO
+  FILE
+  TEXT
+  DATASET
+  CODE
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  actor       String
+  action      String
+  payload     Json?
+  createdAt   DateTime  @default(now())
+}

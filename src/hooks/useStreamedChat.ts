@@ -8,7 +8,13 @@ export type StreamEvent =
   | { type: 'done' }
   | { type: 'error'; data: string };
 
-type SendArgs = { prompt: string; provider?: string };
+type SendArgs = {
+  prompt: string;
+  provider?: string;
+  sessionId?: string;
+  tenantId?: string;
+  model?: string;
+};
 type Options = { onEvent?: (e: StreamEvent) => void };
 
 export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
@@ -18,7 +24,7 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function* send({ prompt, provider }: SendArgs) {
+  async function* send({ prompt, provider, sessionId, tenantId, model }: SendArgs) {
     setBusy(true);
     setError(null);
 
@@ -27,16 +33,21 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
 
     try {
       // Always stream in the UI; the API returns Anthropic/OpenAI/xAI SSE verbatim
-      const qs = new URLSearchParams({
-        prompt,
-        stream: '1',
-        ...(provider ? { provider } : {}),
-      });
-
-      const res = await fetch(`${basePath}?${qs.toString()}`, {
-        method: 'GET',
+      const res = await fetch(basePath, {
+        method: 'POST',
         signal: ctrl.signal,
-        headers: { Accept: 'text/event-stream' },
+        headers: {
+          Accept: 'text/event-stream',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt,
+          provider,
+          sessionId,
+          tenantId,
+          model,
+          stream: true,
+        }),
       });
 
       if (!res.ok || !res.body) {

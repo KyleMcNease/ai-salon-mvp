@@ -1,0 +1,163 @@
+import { NextRequest } from 'next/server';
+import pdfParse from 'pdf-parse';
+
+export const runtime = 'nodejs';
+
+type ExtractResponse = {
+  title: string;
+  sections: Array<{
+    id: string;
+    title: string;
+    text: string;
+    start: number | null;
+    end: number | null;
+  }>;
+};
+
+function extractTextFromHtml(buffer: ArrayBuffer) {
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  const raw = decoder.decode(buffer);
+  const withoutScripts = raw
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '');
+  const withBreaks = withoutScripts
+    .replace(/<\/(p|div|section|article|header|footer|li|ul|ol)>/gi, '\n')
+    .replace(/<(br|hr)\s*\/?\>/gi, '\n')
+    .replace(/<h[1-6][^>]*>/gi, '\n');
+  const text = withBreaks.replace(/<[^>]+>/g, '');
+  return text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function sectionize(text: string) {
+  const lines = text.split(/\n+/);
+  const heading = /^(\s*(\d+(\.\d+){0,3})\s+)?(abstract|introduction|background|overview|related\s+work|methods?|approach|results?|discussion|analysis|evaluation|conclusion|summary|appendix)\b/i;
+
+  const sections: Array<{ title: string; text: string }> = [];
+  let buffer: string[] = [];
+  let title = 'Overview';
+
+  const push = () => {
+    if (!buffer.length) return;
+    const textBlock = buffer.join('\n').trim();
+    if (!textBlock) {
+      buffer = [];
+      return;
+    }
+    sections.push({ title, text: textBlock });
+    buffer = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (heading.test(line)) {
+      push();
+      title = line;
+      continue;
+    }
+    buffer.push(line);
+  }
+
+  push();
+
+  if (sections.length === 0) {
+    return [
+      {
+        id: 'sec_0',
+        title: 'Document',
+        text,
+        start: 0,
+        end: text.length,
+      },
+    ];
+  }
+
+  const results: ExtractResponse['sections'] = [];
+  let cursor = 0;
+  sections.forEach((section, index) => {
+    const snippet = section.text;
+    let start = text.indexOf(snippet, cursor);
+    if (start === -1) start = text.indexOf(snippet.replace(/\s+/g, ' '), cursor);
+    const end = start >= 0 ? start + snippet.length : null;
+    if (start >= 0 && end !== null) {
+      cursor = end;
+    }
+    results.push({
+      id: `sec_${index}`,
+      title: section.title || `Section ${index + 1}`,
+      text: section.text,
+      start: start >= 0 ? start : null,
+      end,
+    });
+  });
+
+  return results;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const contentType = req.headers.get('content-type') ?? '';
+
+    if (!contentType.includes('application/json')) {
+      return new Response('Only JSON payload supported (url or text)', { status: 415 });
+    }
+
+    const payload = (await req.json()) as { url?: string; text?: string };
+
+    let sourceText = payload.text?.trim() ?? '';
+    let title = 'Document';
+
+    if (payload.url) {
+      const res = await fetch(payload.url);
+      if (!res.ok) {
+        return new Response(`Failed to fetch resource (${res.status})`, { status: 502 });
+      }
+      const buffer = await res.arrayBuffer();
+      const mime = res.headers.get('content-type') ?? '';
+
+      if (mime.includes('pdf') || payload.url.toLowerCase().endsWith('.pdf')) {
+        const pdfBuffer = Buffer.from(buffer);
+        const parsed = await pdfParse(pdfBuffer);
+        sourceText = parsed.text ?? '';
+        if (parsed.info?.Title) {
+          title = parsed.info.Title;
+        }
+      } else {
+        sourceText = extractTextFromHtml(buffer);
+      }
+      try {
+        const url = new URL(payload.url);
+        if (url.pathname) {
+          const last = url.pathname.split('/').filter(Boolean).pop();
+          if (last) title = decodeURIComponent(last);
+        }
+        if (url.hostname) {
+          title = `${title} — ${url.hostname}`;
+        }
+      } catch {
+        title = payload.url;
+      }
+    }
+
+    if (!sourceText) {
+      return new Response('Provide either url or text to extract', { status: 400 });
+    }
+
+    const collapsed = sourceText.replace(/\u00a0/g, ' ').trim();
+    const sections = sectionize(collapsed);
+
+    if (title === 'Document' && sections.length > 0) {
+      title = sections[0].title.slice(0, 120) || title;
+    }
+
+    const response: ExtractResponse = {
+      title,
+      sections,
+    };
+
+    return Response.json(response);
+  } catch (error: any) {
+    const message = error?.message || 'Extraction failed';
+    return Response.json({ error: message }, { status: 500 });
+  }
+}
