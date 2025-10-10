@@ -6,9 +6,10 @@ node_modules/
 out/
 dist/
 
-# env files (keep the example)
+# env files (keep the examples)
 .env
 .env.*
+!.env.example
 !.env.local.example
 
 # misc
@@ -20,3 +21,8 @@ coverage/
 .idea/
 .eslintcache
 
+
+# AI-Salon secrets
+.env
+artifacts/
+*.log
