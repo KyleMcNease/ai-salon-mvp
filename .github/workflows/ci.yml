@@ -8,7 +8,23 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
       - run: npm ci || npm i
+
+      - name: Verify licensing/provenance separation
+        run: |
+          test -f LICENSE && test -f NOTICE && test -f THIRD_PARTY_NOTICES.md || (echo "License/NOTICE missing" && exit 1)
+          test -f agents/scribe-agent/LICENSE || (echo "Vendored subtree missing LICENSE" && exit 1)
+          echo "✓ License files verified"
+
+      - name: Enforce boundary (no direct imports of vendored subtree)
+        run: |
+          if rg -n "agents/scribe-agent" src/ packages/ --type ts --type tsx --type js --type jsx 2>/dev/null; then
+            echo "✗ Boundary violation: direct imports of vendored subtree found"
+            exit 1
+          fi
+          echo "✓ No boundary violations"
+
       - name: Runtime=ii
         run: SCRIBE_RUNTIME=ii npx jest --runInBand
+
       - name: Runtime=scribe (placeholder until scribe-core)
         run: SCRIBE_RUNTIME=scribe npx jest --runInBand || true

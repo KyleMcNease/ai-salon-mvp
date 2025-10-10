@@ -8,6 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
@@ -17,6 +20,7 @@
     "supabase:status": "supabase status",
     "mcp:test": "node scripts/test-mcp.js",
     "mcp:local": "npx -y @modelcontextprotocol/server-postgres postgresql://postgres:postgres@127.0.0.1:54322/postgres",
+    "mcp:substack": "npx -y tsx servers/substack/src/index.ts",
     "supabase:link": "./scripts/link-new-project.sh",
     "dev:production": "cp .env.production .env && npm run dev"
   },
@@ -42,6 +46,7 @@
     "zustand": "^4.5.2"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.28",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
@@ -49,9 +54,12 @@
     "autoprefixer": "^10.4.18",
     "eslint": "^8.57.0",
     "eslint-config-next": "14.1.0",
+    "jest": "^30.2.0",
     "postcss": "^8.4.35",
     "prisma": "^5.11.0",
     "tailwindcss": "^3.4.1",
+    "ts-jest": "^29.4.4",
+    "ts-node": "^10.9.2",
     "tsx": "^4.7.1",
     "typescript": "^5.4.2"
   }
