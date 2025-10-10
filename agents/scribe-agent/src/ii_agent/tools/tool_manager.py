@@ -14,6 +14,7 @@ from ii_agent.tools.image_search_tool import ImageSearchTool
 from ii_agent.tools.base import LLMTool
 from ii_agent.llm.message_history import ToolCallParameters
 from ii_agent.tools.openai_llm_tool import OpenAILLMTool
+from ii_agent.tools.openai_codex_tool import OpenAICodexTool
 from ii_agent.tools.register_deployment import RegisterDeploymentTool
 from ii_agent.tools.shell_tools import (
     ShellExecTool,
@@ -75,6 +76,18 @@ from ii_agent.tools.speech_gen_tool import SingleSpeakerSpeechGenerationTool
 from ii_agent.tools.pdf_tool import PdfTextExtractTool
 from ii_agent.tools.deep_research_tool import DeepResearchTool
 from ii_agent.tools.list_html_links_tool import ListHtmlLinksTool
+from ii_agent.tools.agent_s_tool import AgentSTool
+from ii_agent.tools.agent_s_personas import (
+    AgentSPlannerTool,
+    AgentSCoderTool,
+    AgentSTesterTool,
+    AgentSDebuggerTool,
+    AgentSDesignerTool,
+    AgentSResearcherTool,
+    AgentSAutomatorTool,
+    AgentSAnalystTool,
+)
+from ii_agent.tools.agent_s_orchestrator import AgentSOrchestratorTool
 from ii_agent.utils.constants import TOKEN_BUDGET
 from ii_agent.core.storage.models.settings import Settings
 from ii_agent.utils.sandbox_manager import SandboxManager
@@ -132,6 +145,7 @@ def get_system_tools(
             tools.append(DatabaseConnection(settings=settings))
         if settings.third_party_integration_config.openai_api_key:
             tools.append(OpenAILLMTool(settings=settings))
+            tools.append(OpenAICodexTool(settings=settings))
 
     # Shell tools
     tools.extend(
@@ -274,6 +288,28 @@ def get_system_tools(
                     BrowserSelectDropdownOptionTool(browser=browser),
                 ]
             )
+
+        # Agent-S tools for GUI automation and computer control
+        if tool_args.get("agent_s", False):
+            # Add base Agent-S tool
+            tools.append(AgentSTool(settings=settings))
+
+            # Add persona-based tools for specialized tasks
+            if tool_args.get("agent_s_personas", True):  # Enabled by default when agent_s is enabled
+                tools.extend([
+                    AgentSPlannerTool(settings=settings),
+                    AgentSCoderTool(settings=settings),
+                    AgentSTesterTool(settings=settings),
+                    AgentSDebuggerTool(settings=settings),
+                    AgentSDesignerTool(settings=settings),
+                    AgentSResearcherTool(settings=settings),
+                    AgentSAutomatorTool(settings=settings),
+                    AgentSAnalystTool(settings=settings),
+                ])
+
+            # Add orchestrator for parallel multi-agent execution
+            if tool_args.get("agent_s_orchestrator", True):  # Enabled by default when agent_s is enabled
+                tools.append(AgentSOrchestratorTool(settings=settings))
 
         memory_tool = tool_args.get("memory_tool")
         if memory_tool == "compactify-memory":

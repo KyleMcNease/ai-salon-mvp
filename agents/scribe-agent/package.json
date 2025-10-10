@@ -1,0 +1,24 @@
+{
+  "name": "scribe-ai-salon",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "SCRIBE AI-Salon MVP with vendored ii-agent frontend",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KyleMcNease/ai-salon-mvp.git"
+  },
+  "homepage": "https://github.com/KyleMcNease/ai-salon-mvp",
+  "bugs": {
+    "url": "https://github.com/KyleMcNease/ai-salon-mvp/issues"
+  },
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "build:safe": "npm run build:scr && npm run build:ii",
+    "build:scr": "echo 'TypeScript check for SCRIBE code (placeholder)'",
+    "build:ii": "cd frontend && npm run build",
+    "test": "echo 'Tests placeholder'"
+  }
+}
