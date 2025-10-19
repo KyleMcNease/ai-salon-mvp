@@ -1,18 +1,10 @@
 // src/components/Composer.tsx
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
-type ModelOption = {
-  name: string;
-  display: string;
-  providerKey: string;
-  adapterKey?: string;
-  localOnly?: boolean;
-  experimental?: boolean;
-  disabledReason?: string;
-  description?: string;
-};
+import type { ModelOption } from '@/types/models';
+import ModelStatusBadge from '@/components/ModelStatusBadge';
 
 type Props = {
   onSend: (text: string) => Promise<void> | void;
@@ -37,61 +29,7 @@ export default function Composer({
 }: Props) {
   const [text, setText] = useState('');
   const [err, setErr] = useState<string | null>(null);
-
-  const selectedOption = useMemo(
-    () => models.find((option) => option.name === selectedModel) ?? null,
-    [models, selectedModel]
-  );
-
-  const statusInfo = useMemo(() => {
-    const health = selectedOption ? providerHealth[selectedOption.providerKey] : undefined;
-    if (modelsLoading) {
-      return { label: 'Loading…', color: 'bg-neutral-300', title: 'Loading model registry' };
-    }
-    if (!selectedOption) {
-      return { label: 'Choose a model', color: 'bg-neutral-300', title: 'Select a model to continue' };
-    }
-    if (health && !health.ok) {
-      return {
-        label: 'Provider down',
-        color: 'bg-red-500',
-        title: `Provider reported as unavailable${health.model ? ` (${health.model})` : ''}`,
-      };
-    }
-    if (selectedOption.disabledReason === 'missing_credentials') {
-      return {
-        label: 'Configure API key',
-        color: 'bg-amber-500',
-        title: `Set ${selectedOption.providerKey.toUpperCase()} credentials to enable this model`,
-      };
-    }
-    if (selectedOption.disabledReason === 'adapter_missing') {
-      return {
-        label: 'Unsupported',
-        color: 'bg-neutral-400',
-        title: `Adapter for ${selectedOption.providerKey} is not available yet`,
-      };
-    }
-    if (selectedOption.experimental) {
-      return {
-        label: 'Experimental',
-        color: 'bg-indigo-500',
-        title: 'Marked experimental in the registry; expect instability',
-      };
-    }
-    if (selectedOption.localOnly) {
-      return {
-        label: 'Local ready',
-        color: 'bg-emerald-500',
-        title: 'Runs locally with no cloud dependency',
-      };
-    }
-    return {
-      label: 'Ready',
-      color: 'bg-sky-500',
-      title: health?.model ? `Using ${health.model}` : 'Credentials detected',
-    };
-  }, [modelsLoading, selectedOption, providerHealth]);
+  const selectedOption = models.find((option) => option.name === selectedModel) ?? null;
 
   async function handleSend() {
     const v = text.trim();
@@ -138,17 +76,7 @@ export default function Composer({
           )}
         </select>
       </div>
-      <div className="flex items-center gap-2 text-xs text-neutral-500">
-        <span className="flex items-center gap-1" title={statusInfo.title}>
-          <span className={`inline-block h-2 w-2 rounded-full ${statusInfo.color}`} aria-hidden="true" />
-          {statusInfo.label}
-        </span>
-        {selectedOption?.description && (
-          <span className="truncate text-neutral-400" title={selectedOption.description}>
-            {selectedOption.description}
-          </span>
-        )}
-      </div>
+      <ModelStatusBadge model={selectedOption} loading={modelsLoading} providerHealth={providerHealth} />
       <div className="flex gap-2">
         <input
           className="flex-1 border rounded px-3 py-2"

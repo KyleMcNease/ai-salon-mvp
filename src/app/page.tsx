@@ -10,6 +10,8 @@ import Composer from '@/components/Composer';
 import ModelFooter from '@/components/ModelFooter';
 import { getAgentDisplay } from '@/config/agents';
 import { useStreamedChat, type StreamEvent } from '@/hooks/useStreamedChat';
+import type { ModelOption, ProviderId } from '@/types/models';
+import { scanPromptTokens } from '@/lib/promptParsing';
 
 const MEMORY_VERSION = '2025-09-01';
 const DEFAULT_TENANT = 'default';
@@ -18,7 +20,7 @@ const KNOWN_PROVIDERS: Provider[] = ['gpt', 'claude', 'grok', 'opus', 'local'];
 const isProvider = (value: unknown): value is Provider =>
   typeof value === 'string' && KNOWN_PROVIDERS.includes(value as Provider);
 
-export type Provider = 'gpt' | 'claude' | 'grok' | 'opus' | 'local';
+export type Provider = ProviderId;
 
 type Msg = {
   id: string;
@@ -51,21 +53,6 @@ type HistoryResponse = {
       metadata?: Record<string, unknown>;
     }>;
   };
-};
-
-type ModelOption = {
-  name: string;
-  display: string;
-  providerKey: string;
-  providerKind: string;
-  modality: string;
-  description?: string;
-  localOnly: boolean;
-  experimental: boolean;
-  adapterKey?: Provider;
-  agentId: Provider;
-  hasCredentials: boolean;
-  disabledReason?: 'missing_credentials' | 'adapter_missing';
 };
 
 type VoiceStatus =
@@ -272,26 +259,19 @@ export default function Page() {
   const extractMentions = useCallback(
     (input: string) => {
       let cleaned = input;
-      const mentionRegex = /@([A-Za-z0-9_.\-/]+)/g;
-      const toolRegex = /#(?:tool|tools)[:=]([A-Za-z0-9_.-]+)/gi;
-
       const mentionSet = new Set<string>();
       const toolSet = new Set<string>();
+      const { mentionTokens, toolTokens } = scanPromptTokens(input);
 
-      for (const match of input.matchAll(mentionRegex)) {
-        const raw = match[0];
-        const token = match[1];
+      for (const { raw, token } of mentionTokens) {
         const option = resolveMention(token);
         if (!option) continue;
         mentionSet.add(option.name);
         cleaned = cleaned.replace(raw, ' ');
       }
 
-      for (const match of input.matchAll(toolRegex)) {
-        const raw = match[0];
-        const token = match[1];
-        if (!token) continue;
-        toolSet.add(token.toLowerCase());
+      for (const { raw, token } of toolTokens) {
+        toolSet.add(token);
         cleaned = cleaned.replace(raw, ' ');
       }
 
