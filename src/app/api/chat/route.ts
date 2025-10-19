@@ -4,6 +4,7 @@ import type { NextRequest } from 'next/server';
 
 import { adapters } from '@/lib/adapters';
 import { MemoryServiceClient } from '@/lib/memoryService';
+import { deriveScope, isLocalSafeScope, SAFE_MODE_PROVIDER } from '@/config/safeMode';
 
 export const runtime = 'nodejs';
 
@@ -14,6 +15,7 @@ type ChatRequest = {
   sessionId?: string;
   tenantId?: string;
   model?: string;
+  safeMode?: boolean;
 };
 
 const TEXT_DECODER = new TextDecoder();
@@ -94,6 +96,11 @@ function renderHistoryPrompt(entries: { role: string; content: string }[], lates
   return `${conversation}\nUSER: ${latest}`;
 }
 
+const toRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+};
+
 export async function POST(req: NextRequest) {
   let body: ChatRequest;
   try {
@@ -107,7 +114,14 @@ export async function POST(req: NextRequest) {
     return new Response('prompt required', { status: 400 });
   }
 
-  const provider = (body.provider || 'gpt').toLowerCase();
+  const safeMode = Boolean(body.safeMode);
+  const scope = deriveScope(safeMode);
+
+  let provider = (body.provider || 'gpt').toLowerCase();
+  if (safeMode && provider !== SAFE_MODE_PROVIDER) {
+    provider = SAFE_MODE_PROVIDER;
+  }
+
   const adapter = adapters[provider];
   if (!adapter) {
     return new Response('Unknown provider: ' + provider, {
@@ -119,6 +133,10 @@ export async function POST(req: NextRequest) {
   const sessionId = body.sessionId || randomUUID();
   const tenantId = body.tenantId || 'default';
   const stream = body.stream !== false;
+  const effectiveModel =
+    safeMode && (!body.model || body.model.trim().length === 0)
+      ? process.env.LOCAL_MODEL_NAME || 'gpt-oss-120b'
+      : body.model;
 
   const memoryClient = new MemoryServiceClient();
   const now = new Date().toISOString();
@@ -138,7 +156,7 @@ export async function POST(req: NextRequest) {
             role: 'user',
             content: prompt,
             created_at: now,
-            metadata: { source: 'chat-api', provider },
+            metadata: { source: 'chat-api', provider, scope },
           },
         ],
       },
@@ -159,6 +177,11 @@ export async function POST(req: NextRequest) {
     const entries = envelope.payload?.context_entries ?? [];
     const formatted = entries
       .filter((entry) => entry.id !== userMessageId)
+      .filter((entry) => {
+        if (safeMode) return true;
+        const meta = toRecord(entry.metadata);
+        return !isLocalSafeScope(meta?.scope);
+      })
       .map((entry) => ({ role: entry.role, content: entry.content }));
     historyPrompt = renderHistoryPrompt(formatted, prompt);
   } catch (error) {
@@ -167,7 +190,7 @@ export async function POST(req: NextRequest) {
 
   try {
     if (!stream) {
-      const result = await adapter({ prompt: historyPrompt, stream: false, model: body.model });
+      const result = await adapter({ prompt: historyPrompt, stream: false, model: effectiveModel });
 
       const content =
         typeof result === 'string'
@@ -190,7 +213,7 @@ export async function POST(req: NextRequest) {
               role: 'assistant',
               content,
               created_at: new Date().toISOString(),
-              metadata: { provider },
+              metadata: { provider, scope },
             },
           ],
         },
@@ -199,7 +222,7 @@ export async function POST(req: NextRequest) {
       return Response.json({ content, sessionId, tenantId }, { status: 200 });
     }
 
-    const raw = await adapter({ prompt: historyPrompt, stream: true, model: body.model });
+    const raw = await adapter({ prompt: historyPrompt, stream: true, model: effectiveModel });
     const iterable = toAsyncIterable(raw);
     let buffer = '';
     let assistantContent = '';
@@ -245,7 +268,7 @@ export async function POST(req: NextRequest) {
                       role: 'assistant',
                       content: assistantContent,
                       created_at: new Date().toISOString(),
-                      metadata: { provider },
+                      metadata: { provider, scope },
                     },
                   ],
                 },

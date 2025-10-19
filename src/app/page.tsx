@@ -13,12 +13,12 @@ import { useStreamedChat, type StreamEvent } from '@/hooks/useStreamedChat';
 
 const MEMORY_VERSION = '2025-09-01';
 const DEFAULT_TENANT = 'default';
-const KNOWN_PROVIDERS: Provider[] = ['gpt', 'claude', 'grok', 'opus'];
+const KNOWN_PROVIDERS: Provider[] = ['gpt', 'claude', 'grok', 'opus', 'local'];
 
 const isProvider = (value: unknown): value is Provider =>
   typeof value === 'string' && KNOWN_PROVIDERS.includes(value as Provider);
 
-export type Provider = 'gpt' | 'claude' | 'grok' | 'opus';
+export type Provider = 'gpt' | 'claude' | 'grok' | 'opus' | 'local';
 
 type Msg = {
   id: string;
@@ -28,6 +28,8 @@ type Msg = {
   createdAt?: string;
   audioUri?: string;
   voiceId?: string;
+  scope?: 'local-safe' | 'global';
+  metadata?: Record<string, unknown>;
 };
 
 type HistoryResponse = {
@@ -64,7 +66,7 @@ type HeygenStatus =
   | { status: 'error'; error: string; videoId?: string };
 
 function parseProvider(raw: string, fallback: Provider = 'gpt') {
-  const m = raw.match(/^@(gpt|claude|grok|opus)/i);
+  const m = raw.match(/^@(gpt|claude|grok|opus|local)/i);
   if (!m) return { provider: fallback, prompt: raw.trim() };
   return { provider: m[1].toLowerCase() as Provider, prompt: raw.slice(m[0].length).trim() };
 }
@@ -78,7 +80,30 @@ export default function Page() {
   const searchParams = useSearchParams();
   const sessionParam = searchParams?.get('session');
 
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [safeMode, setSafeMode] = useState(false);
+  const [lastGlobalAgent, setLastGlobalAgent] = useState<Provider>('gpt');
+  const toggleSafeMode = useCallback(() => {
+    setSafeMode((prev) => {
+      if (prev) {
+        setActiveAgent(lastGlobalAgent);
+        return false;
+      }
+      if (activeAgent !== 'local') {
+        setLastGlobalAgent(activeAgent);
+      }
+      setActiveAgent('local');
+      return true;
+    });
+  }, [activeAgent, lastGlobalAgent]);
+  const [allMessages, setAllMessages] = useState<Msg[]>([]);
+  const visibleMessages = useMemo(
+    () => (safeMode ? allMessages : allMessages.filter((msg) => msg.scope !== 'local-safe')),
+    [allMessages, safeMode]
+  );
+  const safeShelfEntries = useMemo(
+    () => allMessages.filter((msg) => msg.scope === 'local-safe'),
+    [allMessages]
+  );
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [activeAgent, setActiveAgent] = useState<Provider>('gpt');
@@ -137,7 +162,7 @@ export default function Page() {
 
       if (!res.ok) {
         if (res.status === 404) {
-          setMessages([]);
+          setAllMessages([]);
           setHistoryLoaded(true);
           return;
         }
@@ -175,6 +200,8 @@ export default function Page() {
           const providerRaw = (metadata?.provider as string | undefined)?.toLowerCase();
           const agentId = providerRaw && isProvider(providerRaw) ? providerRaw : entry.role === 'assistant' ? 'gpt' : undefined;
           const artifact = artifactMap.get(entry.id);
+          const scope =
+            (metadata?.scope as string | undefined) === 'local-safe' ? ('local-safe' as const) : ('global' as const);
           return {
             id: entry.id,
             role: entry.role,
@@ -183,20 +210,37 @@ export default function Page() {
             agentId,
             audioUri: artifact?.uri,
             voiceId: artifact?.voiceId ?? (metadata?.voice_id as string | undefined),
+            scope,
+            metadata: metadata ?? undefined,
           } satisfies Msg;
         });
 
-      setMessages(chatMessages);
-      const lastAssistant = [...chatMessages].reverse().find((msg) => msg.role === 'assistant');
-      if (lastAssistant?.agentId) {
-        setActiveAgent(lastAssistant.agentId);
+      setAllMessages(chatMessages);
+
+      const preferredAssistant = [...chatMessages]
+        .reverse()
+        .find(
+          (msg) =>
+            msg.role === 'assistant' &&
+            (safeMode ? msg.scope === 'local-safe' : msg.scope !== 'local-safe')
+        );
+      if (preferredAssistant?.agentId) {
+        setActiveAgent(preferredAssistant.agentId as Provider);
+        if (!safeMode && preferredAssistant.agentId !== 'local') {
+          setLastGlobalAgent(preferredAssistant.agentId as Provider);
+        }
+      } else {
+        setActiveAgent(safeMode ? 'local' : 'gpt');
+        if (!safeMode) {
+          setLastGlobalAgent('gpt');
+        }
       }
       setHistoryLoaded(true);
     } catch (err: any) {
       setHistoryError(err?.message || 'Unable to load history');
       setHistoryLoaded(true);
     }
-  }, [sessionId, tenantId]);
+  }, [sessionId, tenantId, safeMode]);
 
   useEffect(() => {
     loadHistory();
@@ -232,6 +276,7 @@ export default function Page() {
             sessionId,
             messageId: message.id,
             tenantId,
+            safeMode,
           }),
         });
 
@@ -279,7 +324,7 @@ export default function Page() {
         throw err;
       }
     },
-    [loadHistory, sessionId, tenantId]
+    [loadHistory, safeMode, sessionId, tenantId]
   );
 
   const pollHeygenStatus = useCallback(
@@ -359,6 +404,17 @@ export default function Page() {
       if (message.role !== 'assistant') return;
       if (!message.content?.trim()) return;
 
+      if (safeMode) {
+        setHeygenState((prev) => ({
+          ...prev,
+          [message.id]: {
+            status: 'error',
+            error: 'HeyGen rendering is disabled while Safe Mode is active.',
+          },
+        }));
+        return;
+      }
+
       if (heygenTimers.current[message.id]) {
         clearTimeout(heygenTimers.current[message.id]);
         delete heygenTimers.current[message.id];
@@ -407,14 +463,14 @@ export default function Page() {
         }));
       }
     },
-    [pollHeygenStatus]
+    [pollHeygenStatus, safeMode]
   );
 
   useEffect(() => {
     setVoiceState((prev) => {
       let changed = false;
       const next = { ...prev };
-      for (const msg of messages) {
+      for (const msg of visibleMessages) {
         if (!msg.audioUri) continue;
         const existing = next[msg.id];
         if (
@@ -438,10 +494,10 @@ export default function Page() {
       }
       return changed ? next : prev;
     });
-  }, [messages]);
+  }, [visibleMessages]);
 
   useEffect(() => {
-    messages.forEach((msg) => {
+    visibleMessages.forEach((msg) => {
       if (msg.role !== 'assistant') return;
       if (!msg.content?.trim()) return;
       if (msg.audioUri) return;
@@ -450,38 +506,45 @@ export default function Page() {
         requestVoice(msg).catch((err) => console.warn('Voice generation failed', err));
       }
     });
-  }, [messages, requestVoice]);
+  }, [visibleMessages, requestVoice]);
 
   async function onSend(text: string) {
-    const { provider, prompt } = parseProvider(text);
+    const { provider: parsedProvider, prompt } = parseProvider(text);
     if (!prompt) return;
 
     setHistoryError(null);
-    setActiveAgent(provider);
+    const effectiveProvider: Provider = safeMode ? 'local' : parsedProvider;
+    const scope: 'local-safe' | 'global' = safeMode ? 'local-safe' : 'global';
+    setActiveAgent(effectiveProvider);
+    if (!safeMode && effectiveProvider !== 'local') {
+      setLastGlobalAgent(effectiveProvider);
+    }
 
     const userId = crypto.randomUUID();
     const assistantId = crypto.randomUUID();
 
-    setMessages((prev) => [
+    setAllMessages((prev) => [
       ...prev,
       {
         id: userId,
         role: 'user',
         content: prompt,
-        agentId: provider,
+        agentId: effectiveProvider,
         createdAt: new Date().toISOString(),
+        scope,
       },
       {
         id: assistantId,
         role: 'assistant',
         content: '',
-        agentId: provider,
+        agentId: effectiveProvider,
         createdAt: new Date().toISOString(),
+        scope,
       },
     ]);
 
     const updateAssistant = (delta: string) => {
-      setMessages((prev) =>
+      setAllMessages((prev) =>
         prev.map((msg) => (msg.id === assistantId ? { ...msg, content: msg.content + delta } : msg))
       );
     };
@@ -492,7 +555,7 @@ export default function Page() {
     };
 
     try {
-      for await (const ev of send({ prompt, provider, sessionId, tenantId })) {
+      for await (const ev of send({ prompt, provider: effectiveProvider, sessionId, tenantId, safeMode })) {
         handleEvent(ev);
       }
     } catch (err) {
@@ -506,130 +569,212 @@ export default function Page() {
 
   return (
     <main className="flex flex-col min-h-screen bg-neutral-50">
-      <header className="p-4 border-b space-y-1 bg-white/70 backdrop-blur">
-        <h1 className="text-2xl font-semibold">AI Salon</h1>
-        <div className="text-xs text-neutral-500">
-          Session: <code>{sessionId}</code>
+      <header className="p-4 border-b bg-white/70 backdrop-blur">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">AI Salon</h1>
+            <div className="text-xs text-neutral-500">
+              Session: <code>{sessionId}</code>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span
+              className={`text-xs font-semibold tracking-wide ${
+                safeMode ? 'text-emerald-600' : 'text-neutral-500'
+              }`}
+            >
+              {safeMode ? 'Safe Mode Enabled' : 'Safe Mode Off'}
+            </span>
+            <button
+              onClick={toggleSafeMode}
+              className={`px-3 py-1 rounded border text-sm font-medium transition ${
+                safeMode
+                  ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-500'
+                  : 'border-neutral-400 text-neutral-700 hover:bg-neutral-100'
+              }`}
+              aria-pressed={safeMode}
+            >
+              {safeMode ? 'Disable Safe Mode' : 'Enable Safe Mode'}
+            </button>
+          </div>
         </div>
+        {safeMode ? (
+          <div className="mt-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
+            Local-only • Cloud providers disabled • Memories stay in Safe Shelf
+          </div>
+        ) : safeShelfEntries.length > 0 ? (
+          <div className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+            {safeShelfEntries.length} local-safe memories hidden until you enable Safe Mode or share them.
+          </div>
+        ) : null}
       </header>
 
       <AgentIdentityCard agentId={activeAgent} />
 
-      <div className="flex-1 flex flex-col p-4 space-y-4 overflow-y-auto">
-        {!historyLoaded ? (
-          <div className="text-neutral-500">Loading shared memory…</div>
-        ) : messages.length === 0 ? (
-          <div className="text-neutral-500">Start the conversation below.</div>
-        ) : (
-          messages.map((msg) => {
-            if (msg.role === 'assistant') {
-              const identity = getAgentDisplay(msg.agentId);
-              const voiceStatus = voiceState[msg.id];
-              const heygenStatus = heygenState[msg.id] ?? { status: 'idle' };
-              const playable =
-                msg.audioUri || (voiceStatus?.status === 'ready' ? voiceStatus.url : undefined);
+      <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4">
+        <section className="flex-1 flex flex-col space-y-4 overflow-y-auto pr-1">
+          {!historyLoaded ? (
+            <div className="text-neutral-500">Loading shared memory…</div>
+          ) : visibleMessages.length === 0 ? (
+            <div className="text-neutral-500">Start the conversation below.</div>
+          ) : (
+            visibleMessages.map((msg) => {
+              if (msg.role === 'assistant') {
+                const identity = getAgentDisplay(msg.agentId);
+                const voiceStatus = voiceState[msg.id];
+                const heygenStatus = heygenState[msg.id] ?? { status: 'idle' };
+                const playable =
+                  msg.audioUri || (voiceStatus?.status === 'ready' ? voiceStatus.url : undefined);
 
-              return (
-                <div key={msg.id} className="flex gap-4 items-start bg-white p-4 rounded-lg shadow-sm border">
-                  {identity.avatarUrl ? (
-                    <Image
-                      src={identity.avatarUrl}
-                      alt={`${identity.displayName} avatar`}
-                      width={48}
-                      height={48}
-                      className="h-12 w-12 rounded-full object-cover border"
-                      style={{ borderColor: identity.color }}
-                      unoptimized
-                    />
-                  ) : (
-                    <div
-                      className="h-12 w-12 rounded-full flex items-center justify-center text-white text-sm font-semibold"
-                      style={{ backgroundColor: identity.color }}
-                    >
-                      {identity.displayName.slice(0, 2).toUpperCase()}
-                    </div>
-                  )}
+                return (
+                  <div key={msg.id} className="flex gap-4 items-start bg-white p-4 rounded-lg shadow-sm border">
+                    {identity.avatarUrl ? (
+                      <Image
+                        src={identity.avatarUrl}
+                        alt={`${identity.displayName} avatar`}
+                        width={48}
+                        height={48}
+                        className="h-12 w-12 rounded-full object-cover border"
+                        style={{ borderColor: identity.color }}
+                        unoptimized
+                      />
+                    ) : (
+                      <div
+                        className="h-12 w-12 rounded-full flex items-center justify-center text-white text-sm font-semibold"
+                        style={{ backgroundColor: identity.color }}
+                      >
+                        {identity.displayName.slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
 
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold" style={{ color: identity.color }}>
-                        {identity.displayName}
-                      </span>
-                      <span className="text-xs uppercase tracking-wide text-neutral-400">
-                        {identity.providerName}
-                      </span>
-                    </div>
-                    <div className="whitespace-pre-wrap text-neutral-800 leading-relaxed">
-                      {msg.content || '…'}
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex flex-col gap-2">
-                        {voiceStatus?.status === 'loading' && (
-                          <span className="text-xs text-neutral-500">Generating narration…</span>
-                        )}
-                        {voiceStatus?.status === 'error' && (
-                          <div className="text-xs text-red-600 flex items-center gap-2">
-                            Voice failed: {voiceStatus.error}
-                            <button
-                              type="button"
-                              className="underline"
-                              onClick={() => requestVoice(msg, { force: true }).catch(() => {})}
-                            >
-                              Retry
-                            </button>
-                          </div>
-                        )}
-                        {playable && (
-                          <audio controls src={playable} className="w-full max-w-md" />
+                    <div className="flex-1 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold" style={{ color: identity.color }}>
+                          {identity.displayName}
+                        </span>
+                        <span className="text-xs uppercase tracking-wide text-neutral-400">
+                          {identity.providerName}
+                        </span>
+                        {msg.scope === 'local-safe' && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 uppercase">
+                            Local Safe
+                          </span>
                         )}
                       </div>
+                      <div className="whitespace-pre-wrap text-neutral-800 leading-relaxed">
+                        {msg.content || '…'}
+                      </div>
 
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
-                        <span>HeyGen avatar:</span>
-                        {heygenStatus.status === 'ready' && heygenStatus.videoUrl ? (
-                          <a
-                            href={heygenStatus.videoUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline text-neutral-700"
+                      <div className="space-y-2">
+                        <div className="flex flex-col gap-2">
+                          {voiceStatus?.status === 'loading' && (
+                            <span className="text-xs text-neutral-500">Generating narration…</span>
+                          )}
+                          {voiceStatus?.status === 'error' && (
+                            <div className="text-xs text-red-600 flex items-center gap-2">
+                              Voice failed: {voiceStatus.error}
+                              <button
+                                type="button"
+                                className="underline"
+                                onClick={() => requestVoice(msg, { force: true }).catch(() => {})}
+                              >
+                                Retry
+                              </button>
+                            </div>
+                          )}
+                          {playable && (
+                            <audio controls src={playable} className="w-full max-w-md" />
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+                          <span>HeyGen avatar:</span>
+                          {heygenStatus.status === 'ready' && heygenStatus.videoUrl ? (
+                            <a
+                              href={heygenStatus.videoUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline text-neutral-700"
+                            >
+                              Open clip
+                            </a>
+                          ) : heygenStatus.status === 'processing' ? (
+                            <span>Rendering…</span>
+                          ) : heygenStatus.status === 'error' ? (
+                            <span className="text-red-600">{heygenStatus.error}</span>
+                          ) : (
+                            <span className="text-neutral-400">Not generated</span>
+                          )}
+                          <button
+                            type="button"
+                            className="px-2 py-1 border rounded"
+                            onClick={() => requestHeygen(msg)}
+                            disabled={
+                              safeMode ||
+                              heygenStatus.status === 'processing' ||
+                              heygenStatus.status === 'requesting'
+                            }
                           >
-                            Open clip
-                          </a>
-                        ) : heygenStatus.status === 'processing' ? (
-                          <span>Rendering…</span>
-                        ) : heygenStatus.status === 'error' ? (
-                          <span className="text-red-600">{heygenStatus.error}</span>
-                        ) : (
-                          <span className="text-neutral-400">Not generated</span>
-                        )}
-                        <button
-                          type="button"
-                          className="px-2 py-1 border rounded"
-                          onClick={() => requestHeygen(msg)}
-                          disabled={heygenStatus.status === 'processing' || heygenStatus.status === 'requesting'}
-                        >
-                          {heygenStatus.status === 'processing' || heygenStatus.status === 'requesting'
-                            ? 'Working…'
-                            : 'Generate clip'}
-                        </button>
+                            {safeMode
+                              ? 'Locked in Safe Mode'
+                              : heygenStatus.status === 'processing' || heygenStatus.status === 'requesting'
+                              ? 'Working…'
+                              : 'Generate clip'}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
+                );
+              }
+
+              return (
+                <div key={msg.id} className="ml-auto max-w-3xl text-right bg-blue-50 border border-blue-100 p-3 rounded-lg">
+                  <div className="text-sm font-semibold text-blue-600">You</div>
+                  <div className="whitespace-pre-wrap text-neutral-800">{msg.content}</div>
                 </div>
               );
-            }
-
-            return (
-              <div key={msg.id} className="ml-auto max-w-3xl text-right bg-blue-50 border border-blue-100 p-3 rounded-lg">
-                <div className="text-sm font-semibold text-blue-600">You</div>
-                <div className="whitespace-pre-wrap text-neutral-800">{msg.content}</div>
-              </div>
-            );
-          })
-        )}
-        {historyError && <div className="text-red-600 text-sm">{historyError}</div>}
-        {error && <div className="text-red-600 text-sm">{error}</div>}
+            })
+          )}
+          {historyError && <div className="text-red-600 text-sm">{historyError}</div>}
+          {error && <div className="text-red-600 text-sm">{error}</div>}
+        </section>
+        <aside className="w-full lg:w-80 border border-emerald-200 bg-white/70 backdrop-blur rounded-lg p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-neutral-700">Safe Shelf</h2>
+            <span className="text-xs text-neutral-500">{safeShelfEntries.length}</span>
+          </div>
+          {safeShelfEntries.length === 0 ? (
+            <p className="text-xs text-neutral-500">No local-safe memories captured yet.</p>
+          ) : (
+            <ul className="space-y-2 max-h-80 overflow-y-auto pr-1">
+              {safeShelfEntries
+                .slice()
+                .reverse()
+                .map((entry) => {
+                  const created = entry.createdAt ? new Date(entry.createdAt) : null;
+                  const timestamp = created && !Number.isNaN(created.getTime()) ? created.toLocaleString() : null;
+                  return (
+                    <li
+                      key={entry.id}
+                      className="border border-emerald-200 bg-emerald-50 text-emerald-800 rounded-md p-2 text-xs space-y-1"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold">{entry.role === 'assistant' ? 'Assistant' : 'User'}</span>
+                        {timestamp && <span className="text-[10px] text-emerald-600">{timestamp}</span>}
+                      </div>
+                      <p className="whitespace-pre-wrap break-words max-h-24 overflow-hidden">{entry.content}</p>
+                    </li>
+                  );
+                })}
+            </ul>
+          )}
+          {!safeMode && safeShelfEntries.length > 0 && (
+            <p className="text-[11px] text-neutral-500">
+              Enable Safe Mode to bring these memories back into the thread or share them manually.
+            </p>
+          )}
+        </aside>
       </div>
 
       <Composer onSend={onSend} busy={busy} />

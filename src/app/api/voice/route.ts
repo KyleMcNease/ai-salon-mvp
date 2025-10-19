@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 import { MemoryServiceClient } from '@/lib/memoryService';
 import { synthesizeSpeech } from '@/lib/voice';
 import { resolveAgentVoiceId } from '@/server/agents';
+import { deriveScope } from '@/config/safeMode';
 
 export const runtime = 'nodejs';
 
@@ -15,6 +16,7 @@ interface VoiceRequest {
   messageId?: string;
   tenantId?: string;
   agentId?: string;
+  safeMode?: boolean;
 }
 
 export async function POST(req: NextRequest) {
@@ -31,6 +33,8 @@ export async function POST(req: NextRequest) {
   }
 
   const agentId = (payload.agentId || '').trim() || 'gpt';
+  const safeMode = Boolean(payload.safeMode);
+  const scope = deriveScope(safeMode);
   const resolvedVoiceId = resolveAgentVoiceId(agentId, payload.voiceId);
 
   if (!resolvedVoiceId) {
@@ -112,6 +116,9 @@ export async function POST(req: NextRequest) {
     result = await tryLocalTts();
   } catch (localError) {
     console.warn('Local NeuTTS request failed, falling back to ElevenLabs', localError);
+    if (safeMode) {
+      return new Response('Local TTS is unavailable while Safe Mode is active.', { status: 503 });
+    }
     try {
       result = await tryElevenLabs();
     } catch (error: any) {
@@ -149,6 +156,7 @@ export async function POST(req: NextRequest) {
                   provider: result.provider,
                   voice_id: result.voiceId,
                   agent_id: agentId,
+                  scope,
                 },
               },
             ],
@@ -163,6 +171,7 @@ export async function POST(req: NextRequest) {
                       messageId: payload.messageId,
                       voiceId: result.voiceId,
                       mimeType: result.mimeType,
+                      scope,
                     },
                   },
                 ]

@@ -1,4 +1,4 @@
-export type AgentId = 'gpt' | 'claude' | 'grok' | 'opus';
+export type AgentId = 'gpt' | 'claude' | 'grok' | 'opus' | 'local';
 
 type AgentDisplay = {
   id: AgentId;
@@ -54,6 +54,16 @@ export const AGENT_DISPLAY: Record<AgentId, AgentDisplay> = {
     voiceStyle: 'Elevated Sonnet timbre with confident clarity.',
     avatarStyle: 'HeyGen avatar with studio lighting and warm palette.',
     avatarUrl: envAvatar(process.env.NEXT_PUBLIC_HEYGEN_AVATAR_URL_OPUS),
+  },
+  local: {
+    id: 'local',
+    displayName: 'OSS Salon',
+    providerName: 'Local vLLM',
+    tagline: 'Offline co-researcher grounded in safe-mode context.',
+    color: '#0f766e',
+    voiceStyle: 'NeuTTS neutral voice with on-device synthesis.',
+    avatarStyle: 'Minimal terminal glyph with teal glow.',
+    avatarUrl: envAvatar(process.env.NEXT_PUBLIC_LOCAL_AVATAR_URL),
   },
 };
 

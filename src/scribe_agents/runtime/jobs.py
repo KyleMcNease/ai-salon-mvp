@@ -119,7 +119,7 @@ class AgentJobRunner:
         """Create and execute a new job in-process."""
 
         job_id = str(uuid4())
-        now = dt.datetime.now(dt.UTC)
+        now = dt.datetime.now(dt.timezone.utc)
         job = AgentJob(
             id=job_id,
             status="running",
@@ -160,7 +160,7 @@ class AgentJobRunner:
             job.logs.append("Provider completed successfully.")
             job.artifacts = self._build_artifacts(result)
 
-        job.updated_at = dt.datetime.now(dt.UTC)
+        job.updated_at = dt.datetime.now(dt.timezone.utc)
         self.store.put(job)
         return job
 

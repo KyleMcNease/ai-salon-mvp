@@ -14,6 +14,7 @@ type SendArgs = {
   sessionId?: string;
   tenantId?: string;
   model?: string;
+  safeMode?: boolean;
 };
 type Options = { onEvent?: (e: StreamEvent) => void };
 
@@ -24,7 +25,7 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function* send({ prompt, provider, sessionId, tenantId, model }: SendArgs) {
+  async function* send({ prompt, provider, sessionId, tenantId, model, safeMode }: SendArgs) {
     setBusy(true);
     setError(null);
 
@@ -47,6 +48,7 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
           tenantId,
           model,
           stream: true,
+          safeMode,
         }),
       });
 
