@@ -1,3 +1,0 @@
-version = 1
-# Enforce headers for SCRIBE code; exclude vendored subtree.
-excluded_paths = ["agents/scribe-agent/"]

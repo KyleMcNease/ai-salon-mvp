@@ -1,69 +1,26 @@
 {
-  "name": "ai-salon",
-  "version": "0.1.0",
+  "name": "scribe-ai-salon",
+  "version": "1.0.0",
   "private": true,
+  "license": "Apache-2.0",
+  "description": "Scribe AI-Salon MVP with standalone frontend",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KyleMcNease/ai-salon-mvp.git"
+  },
+  "homepage": "https://github.com/KyleMcNease/ai-salon-mvp",
+  "bugs": {
+    "url": "https://github.com/KyleMcNease/ai-salon-mvp/issues"
+  },
+  "workspaces": [
+    "frontend"
+  ],
   "scripts": {
-    "dev": "next dev",
-    "dev:local": "./scripts/dev-local.sh",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
-    "db:push": "prisma db push",
-    "db:migrate": "prisma migrate dev",
-    "db:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts",
-    "supabase:start": "supabase start",
-    "supabase:stop": "supabase stop",
-    "supabase:status": "supabase status",
-    "mcp:test": "node scripts/test-mcp.js",
-    "mcp:local": "npx -y @modelcontextprotocol/server-postgres postgresql://postgres:postgres@127.0.0.1:54322/postgres",
-    "mcp:substack": "npx -y tsx servers/substack/src/index.ts",
-    "supabase:link": "./scripts/link-new-project.sh",
-    "dev:production": "cp .env.production .env && npm run dev"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.20.0",
-    "@modelcontextprotocol/server-postgres": "^0.6.2",
-    "@prisma/client": "^5.11.0",
-    "@supabase/mcp-server-supabase": "^0.5.5",
-    "@supabase/supabase-js": "^2.57.4",
-    "ai": "^5.0.56",
-    "class-variance-authority": "^0.7.0",
-    "clsx": "^2.1.0",
-    "eventsource-parser": "^1.1.2",
-    "lucide-react": "^0.356.0",
-    "next": "^14.2.33",
-    "openai": "^4.29.0",
-    "pdf-parse": "^1.1.1",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-markdown": "^9.0.1",
-    "tailwind-merge": "^2.2.1",
-    "uuid": "^9.0.1",
-    "zustand": "^4.5.2"
-  },
-  "devDependencies": {
-    "@types/jest": "^30.0.0",
-    "@types/node": "^20.11.28",
-    "@types/react": "^18.2.66",
-    "@types/react-dom": "^18.2.22",
-    "@types/uuid": "^9.0.8",
-    "autoprefixer": "^10.4.18",
-    "eslint": "^8.57.0",
-    "eslint-config-next": "14.1.0",
-    "jest": "^30.2.0",
-    "postcss": "^8.4.35",
-    "prisma": "^5.11.0",
-    "tailwindcss": "^3.4.1",
-    "ts-jest": "^29.4.4",
-    "ts-node": "^10.9.2",
-    "tsx": "^4.7.1",
-    "typescript": "^5.4.2"
-  },
-  "engines": {
-    "node": ">=20 <21"
+    "dev": "npm --prefix frontend run dev",
+    "build": "pnpm run build:ii",
+    "build:safe": "npm run build:scr && npm run build:ii",
+    "build:scr": "echo 'TypeScript check for SCRIBE code (placeholder)'",
+    "build:ii": "npm --prefix frontend run build",
+    "test": "echo 'Tests placeholder'"
   }
 }

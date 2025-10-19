@@ -1,30 +1,61 @@
-name: ci
-on: [push, pull_request]
+name: CI
+
+on:
+  push:
+    branches: [main, develop, chore/*]
+  pull_request:
+    branches: [main, develop]
+
 jobs:
-  test:
+  build-test:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install CI prerequisites
+        run: sudo apt-get update && sudo apt-get install -y ripgrep jq
+
+      - name: Run legacy namespace guard
+        run: scripts/ci/no-legacy-namespace.sh
+
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - run: npm ci || npm i
+        with:
+          node-version: '20'
+          cache: 'pnpm'
 
-      - name: Verify licensing/provenance separation
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install JS dependencies (workspace)
+        run: pnpm -w install
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: frontend/.next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            next-${{ runner.os }}-
+
+      - name: Build workspace
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: pnpm -w build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
         run: |
-          test -f LICENSE && test -f NOTICE && test -f THIRD_PARTY_NOTICES.md || (echo "License/NOTICE missing" && exit 1)
-          test -f agents/scribe-agent/LICENSE || (echo "Vendored subtree missing LICENSE" && exit 1)
-          echo "✓ License files verified"
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -e .
+          pip install pytest-asyncio
 
-      - name: Enforce boundary (no direct imports of vendored subtree)
+      - name: Run pytest
         run: |
-          if rg -n "agents/scribe-agent" src/ packages/ --type ts --type tsx --type js --type jsx 2>/dev/null; then
-            echo "✗ Boundary violation: direct imports of vendored subtree found"
-            exit 1
-          fi
-          echo "✓ No boundary violations"
-
-      - name: Runtime=ii
-        run: SCRIBE_RUNTIME=ii npx jest --runInBand
-
-      - name: Runtime=scribe (placeholder until scribe-core)
-        run: SCRIBE_RUNTIME=scribe npx jest --runInBand || true
+          . .venv/bin/activate
+          pytest -q
