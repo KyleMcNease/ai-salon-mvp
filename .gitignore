@@ -21,6 +21,9 @@ coverage/
 .idea/
 .eslintcache
 
+__pycache__/
+*.py[cod]
+
 
 # AI-Salon secrets
 .env
