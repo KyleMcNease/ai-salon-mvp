@@ -1,0 +1,23 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: salon
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  neutts:
+    build:
+      context: ./voice
+      dockerfile: Dockerfile
+    ports: ["9009:9009", "9010:9010"]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -fsS -6 http://[::1]:9009/health || curl -fsS -4 http://127.0.0.1:9009/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

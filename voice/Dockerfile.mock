@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install minimal dependencies
+RUN pip install --no-cache-dir fastapi uvicorn[standard]
+
+COPY app_mock.py ./app.py
+
+EXPOSE 9009 9010
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9009"]

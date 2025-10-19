@@ -1,8 +1,11 @@
-# Upstream: Intelligent-Internet/ii-agent
-- Source: https://github.com/Intelligent-Internet/ii-agent
-- Import method: git subtree into `agents/scribe-agent/`
-- Pull ritual: branch `chore/merge-upstream`, CI contract tests must pass
+# Upstream
 
-Pinned commit: 682d077f9cf6b7a7734ed88b39376128172570ea
-Imported: via git subtree into agents/scribe-agent/ on 2025-10-10T08:39Z
-Local patches (if any): listed in `docs/PATCHES.md`
+Scribe is maintained as a first-party codebase without an active upstream.
+Legacy imports have been snapshotted and live under `agents/scribe-agent/`
+strictly for reference while we replace them with Scribe-native modules.
+
+When in doubt:
+- Treat everything inside `agents/scribe-agent/` as read-only vendor history.
+- Implement new runtime features under `src/scribe_core/**` and `src/scribe_agents/**`.
+- Record any overrides or removals in `docs/PATCHES.md` so collaborators know
+  how the snapshot differs from our live implementation.

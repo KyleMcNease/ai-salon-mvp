@@ -34,3 +34,9 @@ _This log tracks major updates across the SCRIBE build so any agent (ChatGPT, Cl
 - Build Manus plan tree UI/visualizer and hook into Memory Service plan updates (PRD M3).
 - Add safety/observability UI elements (stop controls, plan audit trail) for demo hardening (PRD M4).
 - Integrate optional arXiv reader workflows if deeper metadata/nav required.
+
+## 2025-10-14 — ChatGPT
+- Swapped the mock voice container for the real NeuTTS-Air integration. The FastAPI service now streams audio for GET/POST `/speak.wav`, exposes `/health`, and falls back to bundled samples until custom references are supplied. Model loading happens in a background thread so health checks immediately return `{ "status": "initializing" }` until weights finish downloading (`voice/app.py`).
+- Docker image installs `curl`, clones upstream NeuTTS, adds the FastAPI app, and the compose stack builds it via the main `Dockerfile` with a healthcheck pinned to IPv4 (`voice/Dockerfile`, `docker-compose.yml`).
+- `/api/voice` now prefers the local NeuTTS endpoint at `http://127.0.0.1:9009/speak.wav`, falling back to ElevenLabs if the local service is unavailable, while persisting artifacts in the Memory Service as before (`src/app/api/voice/route.ts`).
+- Verified synthesis end-to-end with `curl -4 http://127.0.0.1:9009/speak.wav` (writes `/tmp/neutts-test.wav`) and with the new `/health` checks.

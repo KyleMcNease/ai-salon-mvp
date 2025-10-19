@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { randomUUID } from 'crypto';
 import { NextRequest } from 'next/server';
 
 import { MemoryServiceClient } from '@/lib/memoryService';
@@ -29,21 +30,107 @@ export async function POST(req: NextRequest) {
     return new Response('text is required', { status: 400 });
   }
 
-  try {
-    const agentId = (payload.agentId || '').trim() || 'gpt';
-    const resolvedVoiceId = resolveAgentVoiceId(agentId, payload.voiceId);
+  const agentId = (payload.agentId || '').trim() || 'gpt';
+  const resolvedVoiceId = resolveAgentVoiceId(agentId, payload.voiceId);
 
-    if (!resolvedVoiceId) {
-      return new Response('Voice ID not configured for agent', { status: 500 });
+  if (!resolvedVoiceId) {
+    return new Response('Voice ID not configured for agent', { status: 500 });
+  }
+
+  const localTtsUrl =
+    process.env.NEUTTS_TTS_URL ||
+    process.env.NEXT_PUBLIC_NEUTTS_TTS_URL ||
+    'http://127.0.0.1:9009/speak.wav';
+
+  async function tryLocalTts(): Promise<{
+    audio: Buffer;
+    mimeType: string;
+    voiceId: string;
+    requestId: string;
+    provider: string;
+  }> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(localTtsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Local TTS returned ${response.status}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const mimeType = response.headers.get('content-type') ?? 'audio/wav';
+      const voiceId = response.headers.get('x-voice-id') ?? 'neutts-air';
+      const requestId = response.headers.get('x-request-id') ?? randomUUID();
+      return {
+        audio: Buffer.from(arrayBuffer),
+        mimeType,
+        voiceId,
+        requestId,
+        provider: 'neutts-air',
+      };
+    } finally {
+      clearTimeout(timeout);
     }
+  }
 
+  async function tryElevenLabs(): Promise<{
+    audio: Buffer;
+    mimeType: string;
+    voiceId: string;
+    requestId: string;
+    provider: string;
+  }> {
+    const agentId = (payload.agentId || '').trim() || 'gpt';
     const audio = await synthesizeSpeech(text, { voiceId: resolvedVoiceId });
     const audioBuffer = Buffer.from(audio.audio);
+    return {
+      audio: audioBuffer,
+      mimeType: audio.mimeType,
+      voiceId: audio.voiceId,
+      requestId: audio.requestId,
+      provider: 'elevenlabs',
+    };
+  }
+
+  let result:
+    | {
+        audio: Buffer;
+        mimeType: string;
+        voiceId: string;
+        requestId: string;
+        provider: string;
+      }
+    | undefined;
+
+  try {
+    result = await tryLocalTts();
+  } catch (localError) {
+    console.warn('Local NeuTTS request failed, falling back to ElevenLabs', localError);
+    try {
+      result = await tryElevenLabs();
+    } catch (error: any) {
+      console.error('voice synthesis failed', error);
+      return new Response(error?.message || 'Voice synthesis failed', { status: 500 });
+    }
+  }
+
+  if (!result) {
+    return new Response('Voice synthesis failed', { status: 500 });
+  }
+
+  try {
+    const audioBuffer = result.audio;
 
     if (payload.sessionId) {
       const memory = new MemoryServiceClient();
       try {
-        const artifactId = payload.messageId || `audio-${audio.requestId}`;
+        const artifactId = payload.messageId || `audio-${result.requestId}`;
         const timestamp = new Date().toISOString();
         await memory.saveContext({
           version: '2025-09-01',
@@ -56,11 +143,11 @@ export async function POST(req: NextRequest) {
                 id: artifactId,
                 type: 'AUDIO',
                 uri: `data:${audio.mimeType};base64,${audioBuffer.toString('base64')}`,
-                mime_type: audio.mimeType,
+                mime_type: result.mimeType,
                 message_id: payload.messageId,
                 metadata: {
-                  provider: 'elevenlabs',
-                  voice_id: audio.voiceId,
+                  provider: result.provider,
+                  voice_id: result.voiceId,
                   agent_id: agentId,
                 },
               },
@@ -68,14 +155,14 @@ export async function POST(req: NextRequest) {
             events: payload.messageId
               ? [
                   {
-                    id: `voice-${audio.requestId}`,
+                    id: `voice-${result.requestId}`,
                     action: 'VOICE_READY',
                     created_at: timestamp,
                     actor: 'voice-service',
                     payload: {
                       messageId: payload.messageId,
-                      voiceId: audio.voiceId,
-                      mimeType: audio.mimeType,
+                      voiceId: result.voiceId,
+                      mimeType: result.mimeType,
                     },
                   },
                 ]
@@ -90,11 +177,11 @@ export async function POST(req: NextRequest) {
     return new Response(audioBuffer, {
       status: 200,
       headers: {
-        'Content-Type': audio.mimeType,
+        'Content-Type': result.mimeType,
         'Content-Length': String(audioBuffer.byteLength),
-        'X-Voice-Id': audio.voiceId,
+        'X-Voice-Id': result.voiceId,
         'X-Agent-Id': agentId,
-        'X-Request-Id': audio.requestId,
+        'X-Request-Id': result.requestId,
       },
     });
   } catch (error: any) {
