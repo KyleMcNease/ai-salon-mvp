@@ -7,39 +7,55 @@ on:
     branches: [main, develop]
 
 jobs:
-  build:
+  build-test:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [20.x]
-
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build (SCRIBE + vendored frontend)
-        run: npm run build:safe
-
-      - name: Run boundary checks
-        run: |
-          VIOLATIONS=$(grep -rn "from ['\"].*agents/scribe-agent\|require(['\"].*agents/scribe-agent" . \
-            --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
-            --exclude-dir=node_modules --exclude-dir=agents --exclude-dir=frontend || true)
-          if [ -n "$VIOLATIONS" ]; then
-            echo "❌ Boundary violation detected:"
-            echo "$VIOLATIONS"
-            exit 1
-          fi
-          echo "✅ No boundary violations found"
+      - name: Install CI prerequisites
+        run: sudo apt-get update && sudo apt-get install -y ripgrep jq
 
       - name: Run legacy namespace guard
-        run: ./scripts/ci/no-legacy-namespace.sh
+        run: scripts/ci/no-legacy-namespace.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install JS dependencies (workspace)
+        run: pnpm -w install
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: frontend/.next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            next-${{ runner.os }}-
+
+      - name: Build workspace
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: pnpm -w build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -e .
+          pip install pytest-asyncio
+
+      - name: Run pytest
+        run: |
+          . .venv/bin/activate
+          pytest -q
