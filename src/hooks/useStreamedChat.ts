@@ -6,7 +6,8 @@ import { useRef, useState } from 'react';
 export type StreamEvent =
   | { type: 'delta'; value: string }
   | { type: 'done' }
-  | { type: 'error'; data: string };
+  | { type: 'error'; data: string }
+  | { type: 'attribution'; model: string; name?: string };
 
 type SendArgs = {
   prompt: string;
@@ -15,6 +16,8 @@ type SendArgs = {
   tenantId?: string;
   model?: string;
   safeMode?: boolean;
+  mentions?: string[];
+  tools?: string[];
 };
 type Options = { onEvent?: (e: StreamEvent) => void };
 
@@ -25,7 +28,7 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function* send({ prompt, provider, sessionId, tenantId, model, safeMode }: SendArgs) {
+  async function* send({ prompt, provider, sessionId, tenantId, model, safeMode, mentions, tools }: SendArgs) {
     setBusy(true);
     setError(null);
 
@@ -49,6 +52,8 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
           model,
           stream: true,
           safeMode,
+          mentions,
+          tools,
         }),
       });
 
@@ -119,6 +124,15 @@ export function useStreamedChat(basePath = '/api/chat', opts: Options = {}) {
               const chunk = obj.content as string;
               onEvent({ type: 'delta', value: chunk });
               yield { type: 'delta', value: chunk } as StreamEvent;
+            }
+            else if (obj?.type === 'attribution' && (obj?.model || obj?.name)) {
+              const payload = {
+                type: 'attribution',
+                model: String(obj?.model ?? obj?.name ?? ''),
+                name: obj?.name ? String(obj.name) : undefined,
+              } as StreamEvent;
+              onEvent(payload);
+              yield payload;
             }
             // Error handling
             else if (obj?.type === 'error') {

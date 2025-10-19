@@ -30,6 +30,7 @@ type Msg = {
   voiceId?: string;
   scope?: 'local-safe' | 'global';
   metadata?: Record<string, unknown>;
+  modelName?: string;
 };
 
 type HistoryResponse = {
@@ -52,6 +53,21 @@ type HistoryResponse = {
   };
 };
 
+type ModelOption = {
+  name: string;
+  display: string;
+  providerKey: string;
+  providerKind: string;
+  modality: string;
+  description?: string;
+  localOnly: boolean;
+  experimental: boolean;
+  adapterKey?: Provider;
+  agentId: Provider;
+  hasCredentials: boolean;
+  disabledReason?: 'missing_credentials' | 'adapter_missing';
+};
+
 type VoiceStatus =
   | { status: 'idle' }
   | { status: 'loading' }
@@ -65,12 +81,6 @@ type HeygenStatus =
   | { status: 'ready'; videoId?: string; videoUrl?: string }
   | { status: 'error'; error: string; videoId?: string };
 
-function parseProvider(raw: string, fallback: Provider = 'gpt') {
-  const m = raw.match(/^@(gpt|claude|grok|opus|local)/i);
-  if (!m) return { provider: fallback, prompt: raw.trim() };
-  return { provider: m[1].toLowerCase() as Provider, prompt: raw.slice(m[0].length).trim() };
-}
-
 const toRecord = (value: unknown): Record<string, unknown> | undefined => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   return value as Record<string, unknown>;
@@ -81,20 +91,19 @@ export default function Page() {
   const sessionParam = searchParams?.get('session');
 
   const [safeMode, setSafeMode] = useState(false);
-  const [lastGlobalAgent, setLastGlobalAgent] = useState<Provider>('gpt');
+  const lastGlobalModelRef = useRef<string | null>(null);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [providerHealth, setProviderHealth] = useState<Record<string, { ok: boolean; model?: string }>>({});
   const toggleSafeMode = useCallback(() => {
     setSafeMode((prev) => {
-      if (prev) {
-        setActiveAgent(lastGlobalAgent);
-        return false;
+      if (!prev) {
+        lastGlobalModelRef.current = selectedModel;
       }
-      if (activeAgent !== 'local') {
-        setLastGlobalAgent(activeAgent);
-      }
-      setActiveAgent('local');
-      return true;
+      return !prev;
     });
-  }, [activeAgent, lastGlobalAgent]);
+  }, [selectedModel]);
   const [allMessages, setAllMessages] = useState<Msg[]>([]);
   const visibleMessages = useMemo(
     () => (safeMode ? allMessages : allMessages.filter((msg) => msg.scope !== 'local-safe')),
@@ -120,6 +129,181 @@ export default function Page() {
   );
 
   const tenantId = DEFAULT_TENANT;
+  const selectedModelOption = useMemo(() => {
+    if (!selectedModel) return null;
+    return modelOptions.find((option) => option.name === selectedModel) ?? null;
+  }, [modelOptions, selectedModel]);
+
+  const loadHealth = useCallback(async () => {
+    try {
+      const res = await fetch('/api/health', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const providers = data?.providers ?? {};
+      const map: Record<string, { ok: boolean; model?: string }> = {
+        openai: { ok: Boolean(providers?.gpt?.ok), model: providers?.gpt?.model },
+        anthropic: { ok: Boolean(providers?.claude?.ok), model: providers?.claude?.model },
+        xai: { ok: Boolean(providers?.grok?.ok), model: providers?.grok?.model },
+        vllm: { ok: true, model: 'local-vllm' },
+        local: { ok: true, model: 'local' },
+        hf: { ok: true, model: providers?.hf?.model ?? 'hf' },
+      };
+      setProviderHealth(map);
+    } catch (error) {
+      setProviderHealth((prev) => (Object.keys(prev).length ? prev : {
+        openai: { ok: false },
+        anthropic: { ok: false },
+        xai: { ok: false },
+        vllm: { ok: true },
+        local: { ok: true },
+        hf: { ok: false },
+      }));
+    }
+  }, []);
+
+  const loadModels = useCallback(
+    async (mode: boolean) => {
+      setModelsLoading(true);
+      try {
+        const res = await fetch(`/api/models?modality=chat&safeMode=${mode ? '1' : '0'}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        const rawModels = Array.isArray(data?.models) ? data.models : [];
+        const options: ModelOption[] = rawModels.map((model: any) => ({
+          name: String(model.name ?? ''),
+          display: String(model.display ?? model.name ?? ''),
+          providerKey: String(model.providerKey ?? model.provider ?? ''),
+          providerKind: String(model.providerKind ?? ''),
+          modality: String(model.modality ?? 'chat'),
+          description: typeof model.description === 'string' ? model.description : undefined,
+          localOnly: Boolean(model.localOnly),
+          experimental: Boolean(model.experimental),
+          adapterKey: model.adapterKey ? (String(model.adapterKey).toLowerCase() as Provider) : undefined,
+          agentId: (model.agentId ? String(model.agentId).toLowerCase() : 'gpt') as Provider,
+          hasCredentials: Boolean(model.hasCredentials ?? true),
+          disabledReason: model.disabledReason,
+        }));
+
+        setModelOptions(options);
+
+        const pickFirstEnabled = () => {
+          const enabled = options.find((option) => !option.disabledReason);
+          return enabled?.name ?? (options[0]?.name ?? null);
+        };
+
+        if (mode) {
+          setSelectedModel(pickFirstEnabled());
+        } else {
+          const target = lastGlobalModelRef.current
+            ? options.find(
+                (option) => option.name === lastGlobalModelRef.current && !option.disabledReason
+              )
+            : undefined;
+          setSelectedModel(target?.name ?? pickFirstEnabled());
+        }
+      } catch (error) {
+        console.error('Failed to load models', error);
+        setModelOptions([]);
+        setSelectedModel(null);
+      } finally {
+        setModelsLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    loadModels(safeMode);
+  }, [loadModels, safeMode]);
+
+  useEffect(() => {
+    loadHealth();
+    const id = setInterval(loadHealth, 60_000);
+    return () => clearInterval(id);
+  }, [loadHealth]);
+
+  useEffect(() => {
+    if (!safeMode && selectedModelOption?.name) {
+      lastGlobalModelRef.current = selectedModelOption.name;
+    }
+  }, [safeMode, selectedModelOption?.name]);
+
+  useEffect(() => {
+    if (selectedModelOption?.agentId) {
+      setActiveAgent(selectedModelOption.agentId);
+    } else if (safeMode) {
+      setActiveAgent('local');
+    } else {
+      setActiveAgent('gpt');
+    }
+  }, [selectedModelOption, safeMode]);
+
+  const resolveMention = useCallback(
+    (token: string): ModelOption | null => {
+      const normalized = token.toLowerCase();
+      const direct = modelOptions.find((option) => option.name.toLowerCase() === normalized);
+      if (direct && !direct.disabledReason) {
+        return direct;
+      }
+      const alias = modelOptions.find(
+        (option) => option.adapterKey === normalized && !option.disabledReason
+      );
+      if (alias) {
+        return alias;
+      }
+      if (normalized.startsWith('hf/')) {
+        const name = normalized.slice(3);
+        const hfOption = modelOptions.find(
+          (option) => option.name.toLowerCase() === name && !option.disabledReason
+        );
+        if (hfOption) {
+          return hfOption;
+        }
+      }
+      return null;
+    },
+    [modelOptions]
+  );
+
+  const extractMentions = useCallback(
+    (input: string) => {
+      let cleaned = input;
+      const mentionRegex = /@([A-Za-z0-9_.\-/]+)/g;
+      const toolRegex = /#(?:tool|tools)[:=]([A-Za-z0-9_.-]+)/gi;
+
+      const mentionSet = new Set<string>();
+      const toolSet = new Set<string>();
+
+      for (const match of input.matchAll(mentionRegex)) {
+        const raw = match[0];
+        const token = match[1];
+        const option = resolveMention(token);
+        if (!option) continue;
+        mentionSet.add(option.name);
+        cleaned = cleaned.replace(raw, ' ');
+      }
+
+      for (const match of input.matchAll(toolRegex)) {
+        const raw = match[0];
+        const token = match[1];
+        if (!token) continue;
+        toolSet.add(token.toLowerCase());
+        cleaned = cleaned.replace(raw, ' ');
+      }
+
+      cleaned = cleaned.replace(/\s{2,}/g, ' ').trim();
+      return {
+        prompt: cleaned,
+        modelMentions: Array.from(mentionSet),
+        toolOverrides: Array.from(toolSet),
+      };
+    },
+    [resolveMention]
+  );
 
   const [voiceState, setVoiceState] = useState<Record<string, VoiceStatus>>({});
   const [heygenState, setHeygenState] = useState<Record<string, HeygenStatus>>({});
@@ -202,6 +386,7 @@ export default function Page() {
           const artifact = artifactMap.get(entry.id);
           const scope =
             (metadata?.scope as string | undefined) === 'local-safe' ? ('local-safe' as const) : ('global' as const);
+          const modelName = typeof metadata?.model === 'string' ? (metadata.model as string) : undefined;
           return {
             id: entry.id,
             role: entry.role,
@@ -212,28 +397,17 @@ export default function Page() {
             voiceId: artifact?.voiceId ?? (metadata?.voice_id as string | undefined),
             scope,
             metadata: metadata ?? undefined,
+            modelName,
           } satisfies Msg;
         });
 
       setAllMessages(chatMessages);
 
-      const preferredAssistant = [...chatMessages]
+      const lastAssistantWithModel = [...chatMessages]
         .reverse()
-        .find(
-          (msg) =>
-            msg.role === 'assistant' &&
-            (safeMode ? msg.scope === 'local-safe' : msg.scope !== 'local-safe')
-        );
-      if (preferredAssistant?.agentId) {
-        setActiveAgent(preferredAssistant.agentId as Provider);
-        if (!safeMode && preferredAssistant.agentId !== 'local') {
-          setLastGlobalAgent(preferredAssistant.agentId as Provider);
-        }
-      } else {
-        setActiveAgent(safeMode ? 'local' : 'gpt');
-        if (!safeMode) {
-          setLastGlobalAgent('gpt');
-        }
+        .find((msg) => msg.role === 'assistant' && msg.modelName);
+      if (lastAssistantWithModel?.modelName) {
+        setSelectedModel((prev) => lastAssistantWithModel.modelName ?? prev);
       }
       setHistoryLoaded(true);
     } catch (err: any) {
@@ -509,19 +683,33 @@ export default function Page() {
   }, [visibleMessages, requestVoice]);
 
   async function onSend(text: string) {
-    const { provider: parsedProvider, prompt } = parseProvider(text);
+    const { prompt, modelMentions, toolOverrides } = extractMentions(text);
     if (!prompt) return;
 
-    setHistoryError(null);
-    const effectiveProvider: Provider = safeMode ? 'local' : parsedProvider;
-    const scope: 'local-safe' | 'global' = safeMode ? 'local-safe' : 'global';
-    setActiveAgent(effectiveProvider);
-    if (!safeMode && effectiveProvider !== 'local') {
-      setLastGlobalAgent(effectiveProvider);
+    if (!selectedModelOption) {
+      setHistoryError('No model selected');
+      return;
     }
+
+    setHistoryError(null);
+    const scope: 'local-safe' | 'global' = safeMode ? 'local-safe' : 'global';
+    const modelName = selectedModelOption.name;
+    const effectiveProvider: Provider = safeMode ? 'local' : selectedModelOption.adapterKey ?? 'gpt';
+    const mentionsToSend = modelMentions.filter((name) => name !== modelName);
+    const toolsToSend = (() => {
+      if (safeMode) {
+        return toolOverrides.filter((tool) => tool !== 'web.search');
+      }
+      return toolOverrides;
+    })();
+    const blockedTools = safeMode ? toolOverrides.filter((tool) => tool === 'web.search') : [];
 
     const userId = crypto.randomUUID();
     const assistantId = crypto.randomUUID();
+
+    if (blockedTools.length > 0) {
+      setHistoryError(`Safe Mode blocked tools: ${blockedTools.join(', ')}`);
+    }
 
     setAllMessages((prev) => [
       ...prev,
@@ -532,6 +720,15 @@ export default function Page() {
         agentId: effectiveProvider,
         createdAt: new Date().toISOString(),
         scope,
+        modelName,
+        metadata:
+          mentionsToSend.length > 0 || toolsToSend.length > 0 || blockedTools.length > 0
+            ? {
+                mentions: mentionsToSend.length > 0 ? mentionsToSend : undefined,
+                tools: toolsToSend.length > 0 ? toolsToSend : undefined,
+                blocked_tools: blockedTools.length > 0 ? blockedTools : undefined,
+              }
+            : undefined,
       },
       {
         id: assistantId,
@@ -540,6 +737,15 @@ export default function Page() {
         agentId: effectiveProvider,
         createdAt: new Date().toISOString(),
         scope,
+        modelName,
+        metadata:
+          mentionsToSend.length > 0 || toolsToSend.length > 0 || blockedTools.length > 0
+            ? {
+                mentions: mentionsToSend.length > 0 ? mentionsToSend : undefined,
+                tools: toolsToSend.length > 0 ? toolsToSend : undefined,
+                blocked_tools: blockedTools.length > 0 ? blockedTools : undefined,
+              }
+            : undefined,
       },
     ]);
 
@@ -552,10 +758,23 @@ export default function Page() {
     const handleEvent = (event: StreamEvent) => {
       if (event.type === 'delta') updateAssistant(event.value);
       if (event.type === 'error') setHistoryError(event.data);
+      if (event.type === 'attribution') {
+        const label = event.name ?? event.model;
+        updateAssistant(`\n\n[${label}]\n`);
+      }
     };
 
     try {
-      for await (const ev of send({ prompt, provider: effectiveProvider, sessionId, tenantId, safeMode })) {
+      for await (const ev of send({
+        prompt,
+        provider: effectiveProvider,
+        sessionId,
+        tenantId,
+        safeMode,
+        model: modelName,
+        mentions: mentionsToSend,
+        tools: toolsToSend,
+      })) {
         handleEvent(ev);
       }
     } catch (err) {
@@ -761,7 +980,12 @@ export default function Page() {
                     >
                       <div className="flex items-center justify-between">
                         <span className="font-semibold">{entry.role === 'assistant' ? 'Assistant' : 'User'}</span>
-                        {timestamp && <span className="text-[10px] text-emerald-600">{timestamp}</span>}
+                        <div className="flex items-center gap-2">
+                          {entry.modelName && (
+                            <span className="text-[10px] uppercase text-emerald-500">{entry.modelName}</span>
+                          )}
+                          {timestamp && <span className="text-[10px] text-emerald-600">{timestamp}</span>}
+                        </div>
                       </div>
                       <p className="whitespace-pre-wrap break-words max-h-24 overflow-hidden">{entry.content}</p>
                     </li>
@@ -777,7 +1001,16 @@ export default function Page() {
         </aside>
       </div>
 
-      <Composer onSend={onSend} busy={busy} />
+      <Composer
+        onSend={onSend}
+        busy={busy}
+        models={modelOptions}
+        selectedModel={selectedModel}
+        onModelChange={(name) => setSelectedModel(name || null)}
+        safeMode={safeMode}
+        modelsLoading={modelsLoading}
+        providerHealth={providerHealth}
+      />
       <ModelFooter />
     </main>
   );

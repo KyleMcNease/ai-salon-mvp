@@ -5,6 +5,7 @@ import type { NextRequest } from 'next/server';
 import { adapters } from '@/lib/adapters';
 import { MemoryServiceClient } from '@/lib/memoryService';
 import { deriveScope, isLocalSafeScope, SAFE_MODE_PROVIDER } from '@/config/safeMode';
+import { getModelDescriptor } from '@/config/modelRegistry';
 
 export const runtime = 'nodejs';
 
@@ -16,10 +17,14 @@ type ChatRequest = {
   tenantId?: string;
   model?: string;
   safeMode?: boolean;
+  mentions?: string[];
+  tools?: string[];
 };
 
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
+
+const SAFE_MODE_BLOCKED_TOOLS = new Set(['web.search']);
 
 function toAsyncIterable(src: any): AsyncIterable<Uint8Array | string> {
   if (src && typeof src[Symbol.asyncIterator] === 'function') {
@@ -101,6 +106,19 @@ const toRecord = (value: unknown): Record<string, unknown> | null => {
   return value as Record<string, unknown>;
 };
 
+function extractContentFromResult(result: any): string {
+  if (typeof result === 'string') return result;
+  if (result && typeof result === 'object') {
+    if ('content' in result) {
+      return String((result as any).content ?? '');
+    }
+    if ('text' in result) {
+      return String((result as any).text ?? '');
+    }
+  }
+  return String(result ?? '');
+}
+
 export async function POST(req: NextRequest) {
   let body: ChatRequest;
   try {
@@ -138,6 +156,29 @@ export async function POST(req: NextRequest) {
       ? process.env.LOCAL_MODEL_NAME || 'gpt-oss-120b'
       : body.model;
 
+  const mentionModels = Array.isArray(body.mentions)
+    ? Array.from(
+        new Set(
+          body.mentions
+            .map((value) => String(value ?? '').trim())
+            .filter((value) => value.length > 0)
+        )
+      )
+    : [];
+  const requestedTools = Array.isArray(body.tools)
+    ? Array.from(
+        new Set(
+          body.tools
+            .map((value) => String(value ?? '').trim().toLowerCase())
+            .filter((value) => value.length > 0)
+        )
+      )
+    : [];
+  const blockedTools = safeMode
+    ? requestedTools.filter((tool) => SAFE_MODE_BLOCKED_TOOLS.has(tool))
+    : [];
+  const allowedTools = requestedTools.filter((tool) => !blockedTools.includes(tool));
+
   const memoryClient = new MemoryServiceClient();
   const now = new Date().toISOString();
   const userMessageId = randomUUID();
@@ -156,7 +197,15 @@ export async function POST(req: NextRequest) {
             role: 'user',
             content: prompt,
             created_at: now,
-            metadata: { source: 'chat-api', provider, scope },
+            metadata: {
+              source: 'chat-api',
+              provider,
+              scope,
+              model: effectiveModel,
+              mentions: mentionModels,
+              tools: allowedTools,
+              blocked_tools: blockedTools.length > 0 ? blockedTools : undefined,
+            },
           },
         ],
       },
@@ -191,15 +240,38 @@ export async function POST(req: NextRequest) {
   try {
     if (!stream) {
       const result = await adapter({ prompt: historyPrompt, stream: false, model: effectiveModel });
+      let content = extractContentFromResult(result);
+      const mentionOutputs: string[] = [];
 
-      const content =
-        typeof result === 'string'
-          ? result
-          : (result && typeof result === 'object' && 'content' in result)
-          ? String((result as any).content ?? '')
-          : (result && typeof result === 'object' && 'text' in result)
-          ? String((result as any).text ?? '')
-          : String(result ?? '');
+      if (mentionModels.length > 0) {
+        for (const mention of mentionModels) {
+          if (!mention || mention === effectiveModel) continue;
+          const descriptor = getModelDescriptor(mention);
+          if (!descriptor || !descriptor.adapterKey) continue;
+          if (safeMode && !descriptor.localOnly) continue;
+          if (!descriptor.hasCredentials && !descriptor.localOnly) continue;
+          const mentionAdapter = adapters[descriptor.adapterKey];
+          if (!mentionAdapter) continue;
+          try {
+            const mentionResult = await mentionAdapter({
+              prompt: historyPrompt,
+              stream: false,
+              model: descriptor.model.name,
+            });
+            const mentionText = extractContentFromResult(mentionResult);
+            if (mentionText.trim()) {
+              content += `\n\n[${descriptor.model.display ?? descriptor.model.name}]\n${mentionText}`;
+              mentionOutputs.push(descriptor.model.name);
+            }
+          } catch (error) {
+            // swallow mention failure for non-stream path
+          }
+        }
+      }
+
+      if (blockedTools.length > 0) {
+        content += `\n\n[Safe Mode] Blocked tools: ${blockedTools.join(', ')}`;
+      }
 
       await memoryClient.saveContext({
         version: '2025-09-01',
@@ -213,7 +285,14 @@ export async function POST(req: NextRequest) {
               role: 'assistant',
               content,
               created_at: new Date().toISOString(),
-              metadata: { provider, scope },
+              metadata: {
+                provider,
+                scope,
+                model: effectiveModel,
+                mentions: mentionOutputs.length > 0 ? mentionOutputs : mentionModels,
+                tools: allowedTools,
+                blocked_tools: blockedTools.length > 0 ? blockedTools : undefined,
+              },
             },
           ],
         },
@@ -226,6 +305,7 @@ export async function POST(req: NextRequest) {
     const iterable = toAsyncIterable(raw);
     let buffer = '';
     let assistantContent = '';
+    const mentionOutputs: string[] = [];
 
     const bodyStream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -252,9 +332,80 @@ export async function POST(req: NextRequest) {
           console.error('stream relay error', error);
           controller.enqueue(TEXT_ENCODER.encode(`data: ${JSON.stringify({ type: 'error', error: String(error) })}\n\n`));
         } finally {
+          if (mentionModels.length > 0) {
+            for (const mention of mentionModels) {
+              if (!mention || mention === effectiveModel) continue;
+              const descriptor = getModelDescriptor(mention);
+              if (!descriptor || !descriptor.adapterKey) continue;
+              if (safeMode && !descriptor.localOnly) {
+                controller.enqueue(
+                  TEXT_ENCODER.encode(
+                    `data: ${JSON.stringify({
+                      type: 'error',
+                      error: `Safe Mode blocks mention ${descriptor.model.name}`,
+                    })}\n\n`
+                  )
+                );
+                continue;
+              }
+              if (!descriptor.hasCredentials && !descriptor.localOnly) {
+                controller.enqueue(
+                  TEXT_ENCODER.encode(
+                    `data: ${JSON.stringify({
+                      type: 'error',
+                      error: `Missing credentials for ${descriptor.model.name}`,
+                    })}\n\n`
+                  )
+                );
+                continue;
+              }
+              const mentionAdapter = adapters[descriptor.adapterKey];
+              if (!mentionAdapter) continue;
+              try {
+                const mentionResult = await mentionAdapter({
+                  prompt: historyPrompt,
+                  stream: false,
+                  model: descriptor.model.name,
+                });
+                const mentionText = extractContentFromResult(mentionResult);
+                if (mentionText.trim()) {
+                  const attribution = {
+                    type: 'attribution',
+                    model: descriptor.model.display ?? descriptor.model.name,
+                    name: descriptor.model.name,
+                  };
+                  controller.enqueue(TEXT_ENCODER.encode(`data: ${JSON.stringify(attribution)}\n\n`));
+                  controller.enqueue(
+                    TEXT_ENCODER.encode(
+                      `data: ${JSON.stringify({
+                        type: 'delta',
+                        content: mentionText,
+                        model: descriptor.model.name,
+                      })}\n\n`
+                    )
+                  );
+                  assistantContent += `\n\n[${descriptor.model.display ?? descriptor.model.name}]\n${mentionText}`;
+                  mentionOutputs.push(descriptor.model.name);
+                }
+              } catch (mentionError) {
+                controller.enqueue(
+                  TEXT_ENCODER.encode(
+                    `data: ${JSON.stringify({
+                      type: 'error',
+                      error: `Mention ${descriptor.model.name} failed: ${String(mentionError)}`,
+                    })}\n\n`
+                  )
+                );
+              }
+            }
+          }
+
           controller.enqueue(TEXT_ENCODER.encode('data: [DONE]\n\n'));
           controller.close();
           try {
+            if (blockedTools.length > 0) {
+              assistantContent += `\n\n[Safe Mode] Blocked tools: ${blockedTools.join(', ')}`;
+            }
             if (assistantContent.trim()) {
               await memoryClient.saveContext({
                 version: '2025-09-01',
@@ -268,7 +419,14 @@ export async function POST(req: NextRequest) {
                       role: 'assistant',
                       content: assistantContent,
                       created_at: new Date().toISOString(),
-                      metadata: { provider, scope },
+                      metadata: {
+                        provider,
+                        scope,
+                        model: effectiveModel,
+                        mentions: mentionOutputs.length > 0 ? mentionOutputs : mentionModels,
+                        tools: allowedTools,
+                        blocked_tools: blockedTools.length > 0 ? blockedTools : undefined,
+                      },
                     },
                   ],
                 },

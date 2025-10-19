@@ -40,3 +40,10 @@ _This log tracks major updates across the SCRIBE build so any agent (ChatGPT, Cl
 - Docker image installs `curl`, clones upstream NeuTTS, adds the FastAPI app, and the compose stack builds it via the main `Dockerfile` with a healthcheck pinned to IPv4 (`voice/Dockerfile`, `docker-compose.yml`).
 - `/api/voice` now prefers the local NeuTTS endpoint at `http://127.0.0.1:9009/speak.wav`, falling back to ElevenLabs if the local service is unavailable, while persisting artifacts in the Memory Service as before (`src/app/api/voice/route.ts`).
 - Verified synthesis end-to-end with `curl -4 http://127.0.0.1:9009/speak.wav` (writes `/tmp/neutts-test.wav`) and with the new `/health` checks.
+
+## 2025-10-15 — ChatGPT
+- Added a declarative model registry backed by `config/models.yml` with runtime loader utilities (`src/config/modelRegistry.ts`) and exposed it via `/api/models` so UI and services share a single source of truth.
+- Updated the chat UI with a model picker that respects Safe Mode (local-only filtering), integrates with the new registry, and carries selection through the optimistic chat flow (`src/app/page.tsx`, `src/components/Composer.tsx`).
+- Extended the streaming chat route to honor explicit model selections, tag memories with scope + model metadata, and execute additional `@model` mentions with attribution events (`src/app/api/chat/route.ts`, `src/hooks/useStreamedChat.ts`).
+- Introduced a local OpenAI-compatible adapter (`src/lib/adapters/local.ts`) and registry-aware provider routing for Safe Mode switching.
+- Surface provider health badges in the picker via `/api/health` polling and propagated tool overrides (`#tool=something`) from the prompt to the chat route so Safe Mode can block cloud tools while preserving metadata.
