@@ -2,104 +2,106 @@
 'use client';
 
 import { useState } from 'react';
+import type { Ref } from 'react';
 
-import type { ModelOption } from '@/types/models';
-import ModelStatusBadge from '@/components/ModelStatusBadge';
+import { Mic, Paperclip, Send as SendIcon } from 'lucide-react';
 
 type Props = {
-  onSend: (text: string) => Promise<void> | void;
+  value: string;
+  onChange: (value: string) => void;
+  onSend: (text: string) => Promise<boolean | void> | boolean | void;
   busy?: boolean;
-  models?: ModelOption[];
-  selectedModel?: string | null;
-  onModelChange?: (modelName: string) => void;
   safeMode?: boolean;
-  modelsLoading?: boolean;
-  providerHealth?: Record<string, { ok: boolean; model?: string }>;
+  textareaRef?: Ref<HTMLTextAreaElement>;
+  onUploadClick?: () => void;
+  onMicClick?: () => void;
 };
 
 export default function Composer({
+  value,
+  onChange,
   onSend,
   busy = false,
-  models = [],
-  selectedModel,
-  onModelChange,
   safeMode = false,
-  modelsLoading = false,
-  providerHealth = {},
+  textareaRef,
+  onUploadClick,
+  onMicClick,
 }: Props) {
-  const [text, setText] = useState('');
   const [err, setErr] = useState<string | null>(null);
-  const selectedOption = models.find((option) => option.name === selectedModel) ?? null;
 
   async function handleSend() {
-    const v = text.trim();
-    if (!v || busy) return;
+    const trimmed = value.trim();
+    if (!trimmed || busy) return;
     setErr(null);
     try {
-      await onSend(v);
-      setText('');
+      const result = await onSend(trimmed);
+      if (result === false) return;
+      onChange('');
     } catch (e: any) {
       setErr(e?.message || 'Failed to send');
     }
   }
 
   return (
-    <div className="w-full max-w-3xl mx-auto p-4 gap-3 flex flex-col">
-      <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-        <label className="text-xs uppercase tracking-wide text-neutral-500" htmlFor="model-picker">
-          Model
-        </label>
-        <select
-          id="model-picker"
-          className="flex-1 border rounded px-3 py-2 text-sm disabled:bg-neutral-100"
-          value={selectedModel ?? ''}
-          onChange={(event) => onModelChange?.(event.target.value)}
-          disabled={modelsLoading || busy || models.length === 0}
-        >
-          {models.length === 0 ? (
-            <option value="" disabled>
-              {modelsLoading ? 'Loading models…' : 'No models available'}
-            </option>
-          ) : (
-            models.map((model) => (
-              <option key={model.name} value={model.name} disabled={Boolean(model.disabledReason)}>
-                {model.display}
-                {model.disabledReason === 'missing_credentials'
-                  ? ' (configure API key)'
-                  : model.disabledReason === 'adapter_missing'
-                  ? ' (unsupported)'
-                  : model.experimental
-                  ? ' (experimental)'
-                  : ''}
-              </option>
-            ))
-          )}
-        </select>
-      </div>
-      <ModelStatusBadge model={selectedOption} loading={modelsLoading} providerHealth={providerHealth} />
-      <div className="flex gap-2">
-        <input
-          className="flex-1 border rounded px-3 py-2"
-          placeholder={
-            safeMode
-              ? 'Safe Mode on — ask your local OSS co-researcher…'
-              : 'Ask anything… (tip: @gpt, @claude, @grok, @local)'
-          }
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSend(); }}
-        />
-        <button
-          onClick={handleSend}
-          disabled={busy || !text.trim()}
-          className="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
-        >
-          {busy ? 'Sending…' : 'Send'}
-        </button>
-      </div>
-      {err && <div className="text-sm text-red-600">{err}</div>}
-      <div className="text-xs text-neutral-500">
-        Press ⌘/Ctrl + Enter to send. Mention specific models with <code>@model</code>.
+    <div className="border-t border-[#eadfce] bg-[#fdf7f1]/90 backdrop-blur">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 px-4 py-4">
+        <div className="flex items-center justify-between text-xs text-neutral-500">
+          <span>
+            Press <kbd className="rounded border px-1 text-[10px]">⌘</kbd>/<kbd className="rounded border px-1 text-[10px]">Ctrl</kbd> +{' '}
+            <kbd className="rounded border px-1 text-[10px]">Enter</kbd> to send.
+          </span>
+          <span className="hidden sm:block">
+            Mention models with <code>@model</code>
+          </span>
+        </div>
+        <div className="flex items-end gap-3 rounded-xl border border-[#e7d7c2] bg-[#fefbf7] px-3 py-2 shadow-sm">
+          <button
+            type="button"
+            onClick={onUploadClick}
+            className="rounded-lg p-2 text-neutral-500 transition hover:bg-[#f2e7d8] hover:text-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7c6347]"
+            title="Attach files"
+          >
+            <Paperclip className="h-5 w-5" />
+          </button>
+          <textarea
+            ref={textareaRef}
+            className="flex-1 resize-none bg-transparent text-sm text-neutral-900 outline-none placeholder:text-neutral-400"
+            placeholder={
+              safeMode
+                ? 'Safe Mode on — your prompts stay local…'
+                : 'Ask anything… (tip: @gpt, @claude, @grok, @local)'
+            }
+            rows={1}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                event.preventDefault();
+                handleSend();
+              }
+            }}
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onMicClick}
+              className="rounded-lg p-2 text-neutral-500 transition hover:bg-[#f2e7d8] hover:text-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7c6347]"
+              title="Start voice capture"
+            >
+              <Mic className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={busy || !value.trim()}
+              className="flex items-center gap-1 rounded-lg bg-[#1f1a17] px-3 py-2 text-sm font-medium text-white transition disabled:opacity-50 disabled:hover:bg-[#1f1a17] hover:bg-[#3a2f25] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+            >
+              {busy ? 'Sending…' : 'Send'}
+              <SendIcon className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        {err && <div className="text-sm text-red-600">{err}</div>}
       </div>
     </div>
   );

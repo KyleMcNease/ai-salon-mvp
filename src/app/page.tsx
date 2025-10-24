@@ -8,10 +8,22 @@ import { useSearchParams } from 'next/navigation';
 import AgentIdentityCard from '@/components/AgentIdentityCard';
 import Composer from '@/components/Composer';
 import ModelFooter from '@/components/ModelFooter';
+import ModelStatusBadge from '@/components/ModelStatusBadge';
 import { getAgentDisplay } from '@/config/agents';
 import { useStreamedChat, type StreamEvent } from '@/hooks/useStreamedChat';
 import type { ModelOption, ProviderId } from '@/types/models';
 import { scanPromptTokens } from '@/lib/promptParsing';
+import {
+  PanelLeft,
+  PanelLeftOpen,
+  PanelLeftClose,
+  MessageSquarePlus,
+  Bot,
+  FlaskConical,
+  History,
+  Shield,
+  Lightbulb,
+} from 'lucide-react';
 
 const MEMORY_VERSION = '2025-09-01';
 const DEFAULT_TENANT = 'default';
@@ -55,6 +67,13 @@ type HistoryResponse = {
   };
 };
 
+type Suggestion = {
+  id: string;
+  title: string;
+  body: string;
+  prompt: string;
+};
+
 type VoiceStatus =
   | { status: 'idle' }
   | { status: 'loading' }
@@ -73,10 +92,22 @@ const toRecord = (value: unknown): Record<string, unknown> | undefined => {
   return value as Record<string, unknown>;
 };
 
+const createSessionId = () => {
+  const globalCrypto = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : undefined;
+  if (globalCrypto && typeof globalCrypto.randomUUID === 'function') {
+    return globalCrypto.randomUUID();
+  }
+  return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 export default function Page() {
   const searchParams = useSearchParams();
   const sessionParam = searchParams?.get('session');
 
+  const [sessionId, setSessionId] = useState<string | null>(() =>
+    sessionParam && sessionParam.length > 10 ? sessionParam : null
+  );
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const [safeMode, setSafeMode] = useState(false);
   const lastGlobalModelRef = useRef<string | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -92,6 +123,8 @@ export default function Page() {
     });
   }, [selectedModel]);
   const [allMessages, setAllMessages] = useState<Msg[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
   const visibleMessages = useMemo(
     () => (safeMode ? allMessages : allMessages.filter((msg) => msg.scope !== 'local-safe')),
     [allMessages, safeMode]
@@ -100,26 +133,131 @@ export default function Page() {
     () => allMessages.filter((msg) => msg.scope === 'local-safe'),
     [allMessages]
   );
+  const safeShelfPreview = useMemo(
+    () => safeShelfEntries.slice().reverse().slice(0, 3),
+    [safeShelfEntries]
+  );
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [activeAgent, setActiveAgent] = useState<Provider>('gpt');
   const { send, busy, error } = useStreamedChat('/api/chat');
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const [composerDraft, setComposerDraft] = useState('');
+  const [draftHydrated, setDraftHydrated] = useState(false);
 
-  const sessionId = useMemo(
-    () =>
-      sessionParam && sessionParam.length > 10
-        ? sessionParam
-        : typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : Math.random().toString(36).slice(2),
-    [sessionParam]
+  useEffect(() => {
+    if (sessionParam && sessionParam.length > 10) {
+      setSessionId(sessionParam);
+      return;
+    }
+    setSessionId((prev) => prev ?? createSessionId());
+  }, [sessionParam]);
+  const handleRailToggle = useCallback(() => setRailCollapsed((prev) => !prev), []);
+  const handleNewChat = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('session');
+    window.location.assign(url.pathname);
+  }, []);
+  const handleAgents = useCallback(() => {
+    console.info('Agents library entry point coming soon.');
+  }, []);
+  const handleResearch = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.location.assign('/narrator');
+  }, []);
+  const handleSessions = useCallback(() => {
+    console.info('Sessions list UI coming soon.');
+  }, []);
+  const handleUploadClick = useCallback(() => {
+    console.info('Upload flow coming soon.');
+  }, []);
+  const handleMicClick = useCallback(() => {
+    console.info('Microphone capture coming soon.');
+  }, []);
+  const handleSuggestionSelect = useCallback((prompt: string) => {
+    setComposerDraft((prev) => {
+      const trimmed = prev.trimEnd();
+      return trimmed ? `${trimmed}\n\n${prompt}` : prompt;
+    });
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => composerRef.current?.focus());
+    } else {
+      composerRef.current?.focus();
+    }
+  }, []);
+  const railItems = useMemo(
+    () => [
+      {
+        key: 'new-chat',
+        label: 'New Chat',
+        icon: MessageSquarePlus,
+        onClick: handleNewChat,
+        hint: 'Start a fresh session',
+      },
+      {
+        key: 'agents',
+        label: 'Agents',
+        icon: Bot,
+        onClick: handleAgents,
+        hint: 'Browse saved specialist agents',
+      },
+      {
+        key: 'research',
+        label: 'Research',
+        icon: FlaskConical,
+        onClick: handleResearch,
+        hint: 'Jump to the Research board',
+      },
+      {
+        key: 'sessions',
+        label: 'Sessions',
+        icon: History,
+        onClick: handleSessions,
+        hint: 'Review prior conversations',
+      },
+    ],
+    [handleAgents, handleNewChat, handleResearch, handleSessions]
   );
 
+  const draftKey = useMemo(() => (sessionId ? `chat-draft-${sessionId}` : null), [sessionId]);
   const tenantId = DEFAULT_TENANT;
   const selectedModelOption = useMemo(() => {
     if (!selectedModel) return null;
     return modelOptions.find((option) => option.name === selectedModel) ?? null;
   }, [modelOptions, selectedModel]);
+  useEffect(() => {
+    setDraftHydrated(false);
+    if (typeof window === 'undefined') return;
+    if (!draftKey) {
+      setComposerDraft('');
+      setDraftHydrated(true);
+      return;
+    }
+    try {
+      const stored = window.localStorage.getItem(draftKey);
+      setComposerDraft(stored ?? '');
+    } catch (err) {
+      console.warn('Unable to load composer draft', err);
+      setComposerDraft('');
+    } finally {
+      setDraftHydrated(true);
+    }
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftHydrated || typeof window === 'undefined' || !draftKey) return;
+    try {
+      if (composerDraft) {
+        window.localStorage.setItem(draftKey, composerDraft);
+      } else {
+        window.localStorage.removeItem(draftKey);
+      }
+    } catch (err) {
+      console.warn('Unable to persist composer draft', err);
+    }
+  }, [composerDraft, draftHydrated, draftKey]);
 
   const loadHealth = useCallback(async () => {
     try {
@@ -206,6 +344,60 @@ export default function Page() {
   useEffect(() => {
     loadModels(safeMode);
   }, [loadModels, safeMode]);
+
+  useEffect(() => {
+    let active = true;
+    setSuggestionsLoading(true);
+    const timer = typeof window !== 'undefined' ? window.setTimeout(() => {
+      if (!active) return;
+      const presetSuggestions: Suggestion[] = [
+        {
+          id: 'plan-scout',
+          title: 'Spin up a research plan',
+          body: 'Map the next steps for the Research board with cite-able sources.',
+          prompt:
+            'Draft a concise research plan outlining three focus areas and key sources for evaluating frontier AI safety updates this week.',
+        },
+        {
+          id: 'agent-handshake',
+          title: 'Compose a multi-agent brief',
+          body: 'Prep Claude + GPT hand-off notes with goals, tone, and guardrails.',
+          prompt:
+            'Write a shared brief that aligns Claude and GPT on tone, goals, and safety guidelines for assisting a startup founder exploring AI copilots.',
+        },
+        {
+          id: 'memory-digest',
+          title: 'Summarize Safe Shelf memories',
+          body: 'Review local-safe context and highlight what should ship upstream.',
+          prompt:
+            'Summarize the local-safe memories in the Safe Shelf and recommend which items are ready to share with the global workspace.',
+        },
+        {
+          id: 'session-retro',
+          title: 'Retro the last session',
+          body: 'Turn the previous chat into action items with owners and due dates.',
+          prompt:
+            'Convert the most recent session transcript into a list of action items with suggested owners and deadlines.',
+        },
+      ];
+      setSuggestions(presetSuggestions);
+      setSuggestionsLoading(false);
+    }, 150) : undefined;
+    return () => {
+      active = false;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const element = messageListRef.current;
+    if (!element) return;
+    const frame = window.requestAnimationFrame(() => {
+      element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [visibleMessages.length]);
 
   useEffect(() => {
     loadHealth();
@@ -309,6 +501,10 @@ export default function Page() {
   useEffect(() => releaseResources, [releaseResources]);
 
   const loadHistory = useCallback(async () => {
+    if (!sessionId) {
+      setHistoryLoaded(false);
+      return;
+    }
     setHistoryError(null);
     setHistoryLoaded((prev) => (prev ? prev : false));
     try {
@@ -394,16 +590,17 @@ export default function Page() {
       setHistoryError(err?.message || 'Unable to load history');
       setHistoryLoaded(true);
     }
-  }, [sessionId, tenantId, safeMode]);
+  }, [sessionId, tenantId]);
 
   useEffect(() => {
     loadHistory();
-  }, [loadHistory]);
+  }, [loadHistory, safeMode]);
 
   const requestVoice = useCallback(
     async (message: Msg, options: { force?: boolean } = {}) => {
       if (message.role !== 'assistant') return;
       if (!message.content?.trim()) return;
+      if (!sessionId) return;
 
       const current = voiceStateRef.current[message.id];
       if (!options.force && current?.status === 'loading') {
@@ -664,11 +861,15 @@ export default function Page() {
 
   async function onSend(text: string) {
     const { prompt, modelMentions, toolOverrides } = extractMentions(text);
-    if (!prompt) return;
+    if (!prompt) return false;
+    if (!sessionId) {
+      setHistoryError('Session is initializing. Please try again in a moment.');
+      return false;
+    }
 
     if (!selectedModelOption) {
       setHistoryError('No model selected');
-      return;
+      return false;
     }
 
     setHistoryError(null);
@@ -744,6 +945,7 @@ export default function Page() {
       }
     };
 
+    let success = true;
     try {
       for await (const ev of send({
         prompt,
@@ -760,238 +962,393 @@ export default function Page() {
     } catch (err) {
       console.error(err);
       setHistoryError((err as Error)?.message || 'Streaming failed');
+      success = false;
     } finally {
       voiceRequests.current.delete(assistantId);
       await loadHistory();
     }
+    return success;
   }
 
+
   return (
-    <main className="flex flex-col min-h-screen bg-neutral-50">
-      <header className="p-4 border-b bg-white/70 backdrop-blur">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">AI Salon</h1>
-            <div className="text-xs text-neutral-500">
-              Session: <code>{sessionId}</code>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <span
-              className={`text-xs font-semibold tracking-wide ${
-                safeMode ? 'text-emerald-600' : 'text-neutral-500'
-              }`}
-            >
-              {safeMode ? 'Safe Mode Enabled' : 'Safe Mode Off'}
-            </span>
-            <button
-              onClick={toggleSafeMode}
-              className={`px-3 py-1 rounded border text-sm font-medium transition ${
-                safeMode
-                  ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-500'
-                  : 'border-neutral-400 text-neutral-700 hover:bg-neutral-100'
-              }`}
-              aria-pressed={safeMode}
-            >
-              {safeMode ? 'Disable Safe Mode' : 'Enable Safe Mode'}
-            </button>
-          </div>
+    <main className="flex h-screen bg-[#f6f0ea] text-neutral-900">
+      <aside
+        className={`${
+          railCollapsed ? 'w-14' : 'w-64'
+        } flex h-full flex-col border-r border-[#eadfce] bg-[#fdf7f1]/90 backdrop-blur transition-all duration-300`}
+      >
+        <div className="flex items-center justify-between border-b border-[#eadfce] px-3 py-4">
+          {!railCollapsed && <span className="text-sm font-semibold text-neutral-600">Workspace</span>}
+          <button
+            type="button"
+            onClick={handleRailToggle}
+            className="rounded-lg border border-[#e7d7c2] bg-white p-2 text-neutral-500 transition hover:text-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black"
+            aria-label={railCollapsed ? 'Expand rail' : 'Collapse rail'}
+          >
+            {railCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </button>
         </div>
-        {safeMode ? (
-          <div className="mt-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
-            Local-only • Cloud providers disabled • Memories stay in Safe Shelf
+        <nav className="flex-1 space-y-6 overflow-y-auto px-2 py-4">
+          <div className="space-y-1">
+            {railItems.map(({ key, label, icon: Icon, onClick, hint }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={onClick}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-neutral-600 transition hover:bg-[#f2e7d8] hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347] ${railCollapsed ? 'justify-center px-2' : ''}`}
+                title={hint}
+              >
+                <Icon className="h-4 w-4" />
+                {!railCollapsed && <span>{label}</span>}
+              </button>
+            ))}
           </div>
-        ) : safeShelfEntries.length > 0 ? (
-          <div className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-            {safeShelfEntries.length} local-safe memories hidden until you enable Safe Mode or share them.
-          </div>
-        ) : null}
-      </header>
-
-      <AgentIdentityCard agentId={activeAgent} />
-
-      <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4">
-        <section className="flex-1 flex flex-col space-y-4 overflow-y-auto pr-1">
-          {!historyLoaded ? (
-            <div className="text-neutral-500">Loading shared memory…</div>
-          ) : visibleMessages.length === 0 ? (
-            <div className="text-neutral-500">Start the conversation below.</div>
-          ) : (
-            visibleMessages.map((msg) => {
-              if (msg.role === 'assistant') {
-                const identity = getAgentDisplay(msg.agentId);
-                const voiceStatus = voiceState[msg.id];
-                const heygenStatus = heygenState[msg.id] ?? { status: 'idle' };
-                const playable =
-                  msg.audioUri || (voiceStatus?.status === 'ready' ? voiceStatus.url : undefined);
-
-                return (
-                  <div key={msg.id} className="flex gap-4 items-start bg-white p-4 rounded-lg shadow-sm border">
-                    {identity.avatarUrl ? (
-                      <Image
-                        src={identity.avatarUrl}
-                        alt={`${identity.displayName} avatar`}
-                        width={48}
-                        height={48}
-                        className="h-12 w-12 rounded-full object-cover border"
-                        style={{ borderColor: identity.color }}
-                        unoptimized
-                      />
-                    ) : (
-                      <div
-                        className="h-12 w-12 rounded-full flex items-center justify-center text-white text-sm font-semibold"
-                        style={{ backgroundColor: identity.color }}
-                      >
-                        {identity.displayName.slice(0, 2).toUpperCase()}
-                      </div>
-                    )}
-
-                    <div className="flex-1 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold" style={{ color: identity.color }}>
-                          {identity.displayName}
-                        </span>
-                        <span className="text-xs uppercase tracking-wide text-neutral-400">
-                          {identity.providerName}
-                        </span>
-                        {msg.scope === 'local-safe' && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 uppercase">
-                            Local Safe
-                          </span>
-                        )}
-                      </div>
-                      <div className="whitespace-pre-wrap text-neutral-800 leading-relaxed">
-                        {msg.content || '…'}
-                      </div>
-
-                      <div className="space-y-2">
-                        <div className="flex flex-col gap-2">
-                          {voiceStatus?.status === 'loading' && (
-                            <span className="text-xs text-neutral-500">Generating narration…</span>
-                          )}
-                          {voiceStatus?.status === 'error' && (
-                            <div className="text-xs text-red-600 flex items-center gap-2">
-                              Voice failed: {voiceStatus.error}
-                              <button
-                                type="button"
-                                className="underline"
-                                onClick={() => requestVoice(msg, { force: true }).catch(() => {})}
-                              >
-                                Retry
-                              </button>
-                            </div>
-                          )}
-                          {playable && (
-                            <audio controls src={playable} className="w-full max-w-md" />
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
-                          <span>HeyGen avatar:</span>
-                          {heygenStatus.status === 'ready' && heygenStatus.videoUrl ? (
-                            <a
-                              href={heygenStatus.videoUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="underline text-neutral-700"
-                            >
-                              Open clip
-                            </a>
-                          ) : heygenStatus.status === 'processing' ? (
-                            <span>Rendering…</span>
-                          ) : heygenStatus.status === 'error' ? (
-                            <span className="text-red-600">{heygenStatus.error}</span>
-                          ) : (
-                            <span className="text-neutral-400">Not generated</span>
-                          )}
-                          <button
-                            type="button"
-                            className="px-2 py-1 border rounded"
-                            onClick={() => requestHeygen(msg)}
-                            disabled={
-                              safeMode ||
-                              heygenStatus.status === 'processing' ||
-                              heygenStatus.status === 'requesting'
-                            }
-                          >
-                            {safeMode
-                              ? 'Locked in Safe Mode'
-                              : heygenStatus.status === 'processing' || heygenStatus.status === 'requesting'
-                              ? 'Working…'
-                              : 'Generate clip'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
-
-              return (
-                <div key={msg.id} className="ml-auto max-w-3xl text-right bg-blue-50 border border-blue-100 p-3 rounded-lg">
-                  <div className="text-sm font-semibold text-blue-600">You</div>
-                  <div className="whitespace-pre-wrap text-neutral-800">{msg.content}</div>
+          {!railCollapsed &&
+            (suggestionsLoading ? (
+              <div className="space-y-2 rounded-xl border border-[#e9dcc9] bg-[#f9f3eb] p-3">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#a2703d]">
+                  <Lightbulb className="h-4 w-4" />
+                  Quick actions
                 </div>
-              );
-            })
-          )}
-          {historyError && <div className="text-red-600 text-sm">{historyError}</div>}
-          {error && <div className="text-red-600 text-sm">{error}</div>}
-        </section>
-        <aside className="w-full lg:w-80 border border-emerald-200 bg-white/70 backdrop-blur rounded-lg p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-neutral-700">Safe Shelf</h2>
-            <span className="text-xs text-neutral-500">{safeShelfEntries.length}</span>
-          </div>
-          {safeShelfEntries.length === 0 ? (
-            <p className="text-xs text-neutral-500">No local-safe memories captured yet.</p>
-          ) : (
-            <ul className="space-y-2 max-h-80 overflow-y-auto pr-1">
-              {safeShelfEntries
-                .slice()
-                .reverse()
-                .map((entry) => {
+                <div className="space-y-2">
+                  {Array.from({ length: 4 }).map((_, index) => (
+                    <div
+                      key={index}
+                      className="h-10 animate-pulse rounded-lg border border-[#e7d7c2] bg-[#f5ede1]"
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : suggestions.length > 0 ? (
+              <div className="space-y-2 rounded-xl border border-[#e9dcc9] bg-[#fefbf7] p-3">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#a2703d]">
+                  <Lightbulb className="h-4 w-4" />
+                  Quick actions
+                </div>
+                <div className="space-y-2">
+                  {suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion.id}
+                      type="button"
+                      onClick={() => handleSuggestionSelect(suggestion.prompt)}
+                      className="w-full rounded-lg border border-[#e2cfb7] bg-white px-3 py-2 text-left text-sm text-[#443629] shadow-sm transition hover:border-[#cfb48d] hover:bg-[#fff9ef] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                    >
+                      <div className="font-semibold">{suggestion.title}</div>
+                      <p className="text-xs text-neutral-500">{suggestion.body}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null)}
+          <div
+            className={`rounded-xl border border-[#e7d7c2] bg-[#f9f1e4]/90 p-3 transition ${
+              railCollapsed ? 'px-2 text-center' : ''
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              {!railCollapsed && (
+                <span className="text-xs font-semibold uppercase tracking-wide text-[#a2703d]">
+                  Safe Shelf
+                </span>
+              )}
+              <div className="flex items-center gap-1 text-xs text-[#a2703d]">
+                <Shield className="h-3 w-3" />
+                <span>{safeShelfEntries.length}</span>
+              </div>
+            </div>
+            {railCollapsed ? (
+              <p className="mt-2 text-[10px] text-[#a2703d]">Expand to review local-safe notes.</p>
+            ) : safeShelfEntries.length === 0 ? (
+              <p className="mt-3 text-xs text-[#a2703d]">No local-safe memories captured yet.</p>
+            ) : (
+              <ul className="mt-3 space-y-2 text-xs text-[#5f4a34]">
+                {safeShelfPreview.map((entry) => {
                   const created = entry.createdAt ? new Date(entry.createdAt) : null;
-                  const timestamp = created && !Number.isNaN(created.getTime()) ? created.toLocaleString() : null;
+                  const timestamp =
+                    created && !Number.isNaN(created.getTime()) ? created.toLocaleTimeString() : 'recently';
                   return (
                     <li
                       key={entry.id}
-                      className="border border-emerald-200 bg-emerald-50 text-emerald-800 rounded-md p-2 text-xs space-y-1"
+                      className="rounded-lg border border-[#e4d4c0] bg-[#fdfaf6] p-2 shadow-sm"
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">{entry.role === 'assistant' ? 'Assistant' : 'User'}</span>
-                        <div className="flex items-center gap-2">
-                          {entry.modelName && (
-                            <span className="text-[10px] uppercase text-emerald-500">{entry.modelName}</span>
-                          )}
-                          {timestamp && <span className="text-[10px] text-emerald-600">{timestamp}</span>}
-                        </div>
+                      <div className="flex items-center justify-between text-[11px] text-[#7d6041]">
+                        <span className="font-semibold">
+                          {entry.role === 'assistant' ? 'Assistant' : 'You'}
+                        </span>
+                        <span>{timestamp}</span>
                       </div>
-                      <p className="whitespace-pre-wrap break-words max-h-24 overflow-hidden">{entry.content}</p>
+                      {entry.modelName && (
+                        <div className="text-[10px] uppercase text-[#b3844e]">{entry.modelName}</div>
+                      )}
+                      <p className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words text-[#5f4a34]">
+                        {entry.content}
+                      </p>
                     </li>
                   );
                 })}
-            </ul>
-          )}
-          {!safeMode && safeShelfEntries.length > 0 && (
-            <p className="text-[11px] text-neutral-500">
-              Enable Safe Mode to bring these memories back into the thread or share them manually.
-            </p>
-          )}
-        </aside>
-      </div>
+              </ul>
+            )}
+          </div>
+        </nav>
+      </aside>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <header className="sticky top-0 z-20 border-b border-[#eadfce] bg-[#fdf9f4]/90 backdrop-blur">
+          <div className="flex flex-col gap-3 px-4 py-4 md:px-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                <button
+                  type="button"
+                  onClick={handleRailToggle}
+                  className="inline-flex items-center justify-center rounded-lg border border-[#e7d7c2] bg-white p-2 text-neutral-500 transition hover:text-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347] md:hidden"
+                  aria-label="Toggle rail"
+                >
+                  <PanelLeft className="h-4 w-4" />
+                </button>
+                <h1 className="text-lg font-semibold md:text-2xl">AI Salon</h1>
+                <div className="text-xs text-neutral-500">
+                  Session:{' '}
+                  <code className="rounded bg-[#f1e7da] px-1 py-[1px] text-[#6d5b45]">
+                    {sessionId ?? 'initializing…'}
+                  </code>
+                </div>
+              </div>
+              <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <div className="flex items-center gap-2">
+                  <label
+                    htmlFor="model-picker"
+                    className="text-xs uppercase tracking-wide text-neutral-500"
+                  >
+                    Model
+                  </label>
+                  <select
+                    id="model-picker"
+                    className="min-w-[10rem] rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-sm shadow-sm disabled:bg-neutral-100"
+                    value={selectedModel ?? ''}
+                    onChange={(event) => setSelectedModel(event.target.value || null)}
+                    disabled={modelsLoading || busy || modelOptions.length === 0}
+                  >
+                    {modelOptions.length === 0 ? (
+                      <option value="" disabled>
+                        {modelsLoading ? 'Loading models…' : 'No models available'}
+                      </option>
+                    ) : (
+                      modelOptions.map((model) => (
+                        <option key={model.name} value={model.name} disabled={Boolean(model.disabledReason)}>
+                          {model.display}
+                          {model.disabledReason === 'missing_credentials'
+                            ? ' (configure API key)'
+                            : model.disabledReason === 'adapter_missing'
+                            ? ' (unsupported)'
+                            : model.experimental
+                            ? ' (experimental)'
+                            : ''}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                <ModelStatusBadge
+                  model={selectedModelOption}
+                  loading={modelsLoading}
+                  providerHealth={providerHealth}
+                />
+                <button
+                  type="button"
+                  onClick={toggleSafeMode}
+                  className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347] ${
+                    safeMode
+                      ? 'border border-emerald-500/70 bg-emerald-500 text-white hover:bg-emerald-400'
+                      : 'border border-[#e0d5c2] bg-white text-neutral-600 hover:bg-[#f8f1e7]'
+                  }`}
+                  aria-pressed={safeMode}
+                >
+                  {safeMode ? 'Safe Mode Enabled' : 'Safe Mode Off'}
+                </button>
+              </div>
+            </div>
+            {safeMode ? (
+              <div className="rounded-lg border border-emerald-200/70 bg-emerald-50/90 px-3 py-2 text-sm text-emerald-700">
+                Local-only • Cloud providers disabled • Memories stay in Safe Shelf
+              </div>
+            ) : safeShelfEntries.length > 0 ? (
+              <div className="rounded-lg border border-[#ecd7b5] bg-[#fff3da] px-3 py-2 text-sm text-[#b37a32]">
+                {safeShelfEntries.length} local-safe memories hidden until you enable Safe Mode or share them.
+              </div>
+            ) : null}
+          </div>
+        </header>
+        <div className="flex flex-1 flex-col overflow-hidden bg-[#f8f2eb]">
+          <AgentIdentityCard agentId={activeAgent} />
+          <div className="flex flex-1 flex-col gap-6 overflow-hidden px-4 pb-6 pt-6 md:px-6">
+            {visibleMessages.length === 0 && (
+              <div className="rounded-2xl border border-[#eadfce] bg-[#fdf9f4] px-5 py-6 text-sm text-[#5f4a34] shadow-sm">
+                Ready when you are. Type a prompt below or open the left rail for quick actions.
+              </div>
+            )}
+            <div
+              ref={messageListRef}
+              className="flex-1 space-y-4 overflow-y-auto pr-1 will-change-transform"
+            >
+              {!historyLoaded ? (
+                <div className="rounded-lg border border-[#eadfce] bg-[#fdf9f4] px-4 py-3 text-neutral-500 shadow-sm">
+                  Loading shared memory…
+                </div>
+              ) : visibleMessages.length === 0 ? (
+                <div className="rounded-lg border border-[#eadfce] bg-[#fdf9f4] px-4 py-6 text-sm text-neutral-500 shadow-sm">
+                  No sessions yet—start a new chat or open the Research board.
+                </div>
+              ) : (
+                visibleMessages.map((msg) => {
+                  if (msg.role === 'assistant') {
+                    const identity = getAgentDisplay(msg.agentId);
+                    const voiceStatus = voiceState[msg.id];
+                    const heygenStatus = heygenState[msg.id] ?? { status: 'idle' };
+                    const playable =
+                      msg.audioUri || (voiceStatus?.status === 'ready' ? voiceStatus.url : undefined);
 
-      <Composer
-        onSend={onSend}
-        busy={busy}
-        models={modelOptions}
-        selectedModel={selectedModel}
-        onModelChange={(name) => setSelectedModel(name || null)}
-        safeMode={safeMode}
-        modelsLoading={modelsLoading}
-        providerHealth={providerHealth}
-      />
-      <ModelFooter />
+                    return (
+                      <div
+                        key={msg.id}
+                        className="flex gap-4 rounded-2xl border border-[#eadfce] bg-[#fefbf7] p-4 shadow-sm transition hover:shadow-md"
+                      >
+                        {identity.avatarUrl ? (
+                          <Image
+                            src={identity.avatarUrl}
+                            alt={`${identity.displayName} avatar`}
+                            width={48}
+                            height={48}
+                            className="h-12 w-12 rounded-full object-cover border"
+                            style={{ borderColor: identity.color }}
+                            unoptimized
+                          />
+                        ) : (
+                          <div
+                            className="flex h-12 w-12 items-center justify-center rounded-full text-sm font-semibold text-white"
+                            style={{ backgroundColor: identity.color }}
+                          >
+                            {identity.displayName.slice(0, 2).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="flex-1 space-y-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold text-neutral-800" style={{ color: identity.color }}>
+                              {identity.displayName}
+                            </span>
+                            <span className="text-xs uppercase tracking-wide text-neutral-400">
+                              {identity.providerName}
+                            </span>
+                            {msg.modelName && (
+                              <span className="text-[10px] uppercase text-neutral-400">{msg.modelName}</span>
+                            )}
+                            <span className="text-xs text-neutral-400">
+                              {msg.createdAt ? new Date(msg.createdAt).toLocaleString() : 'moments ago'}
+                            </span>
+                            {msg.scope === 'local-safe' && (
+                              <span className="text-[10px] uppercase tracking-wide text-[#8a693c]">
+                                Local Safe
+                              </span>
+                            )}
+                          </div>
+                          <div className="whitespace-pre-wrap text-neutral-800 leading-relaxed">
+                            {msg.content || '…'}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3 text-xs">
+                            <button
+                              type="button"
+                              className="rounded-lg border border-[#dfd3c1] px-3 py-1 text-neutral-600 transition hover:border-[#cbb79a] hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#806444]"
+                              onClick={() => requestVoice(msg)}
+                              disabled={voiceStatus?.status === 'loading'}
+                            >
+                              {voiceStatus?.status === 'loading'
+                                ? 'Generating audio…'
+                                : voiceStatus?.status === 'ready'
+                                ? 'Replay voice'
+                                : voiceStatus?.status === 'error'
+                                ? 'Retry voice'
+                                : msg.audioUri
+                                ? 'Play voice'
+                                : 'Generate voice'}
+                            </button>
+                            {voiceStatus?.status === 'error' && (
+                              <span className="text-red-600">{voiceStatus.error}</span>
+                            )}
+                            {playable && (
+                              <audio
+                                controls
+                                src={playable}
+                                className="w-full max-w-md rounded-lg border border-[#eadfce]"
+                              />
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+                            <span>HeyGen avatar:</span>
+                            {heygenStatus.status === 'ready' && heygenStatus.videoUrl ? (
+                              <a
+                                href={heygenStatus.videoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="underline text-neutral-700"
+                              >
+                                Open clip
+                              </a>
+                            ) : heygenStatus.status === 'processing' ? (
+                              <span>Rendering…</span>
+                            ) : heygenStatus.status === 'error' ? (
+                              <span className="text-red-600">{heygenStatus.error}</span>
+                            ) : (
+                              <span className="text-neutral-400">Not generated</span>
+                            )}
+                            <button
+                              type="button"
+                              className="rounded-lg border border-[#dfd3c1] px-3 py-1 text-neutral-600 transition hover:border-[#cbb79a] hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#806444]"
+                              onClick={() => requestHeygen(msg)}
+                              disabled={
+                                safeMode ||
+                                heygenStatus.status === 'processing' ||
+                                heygenStatus.status === 'requesting'
+                              }
+                            >
+                              {safeMode
+                                ? 'Locked in Safe Mode'
+                                : heygenStatus.status === 'processing' || heygenStatus.status === 'requesting'
+                                ? 'Working…'
+                                : 'Generate clip'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={msg.id}
+                      className="ml-auto max-w-3xl rounded-2xl border border-[#d9e4ff] bg-[#eef4ff] px-4 py-3 text-right shadow-sm"
+                    >
+                      <div className="text-sm font-semibold text-blue-600">You</div>
+                      <div className="whitespace-pre-wrap text-neutral-800">{msg.content}</div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            {historyError && <div className="text-sm text-red-600">{historyError}</div>}
+            {error && <div className="text-sm text-red-600">{error}</div>}
+          </div>
+        </div>
+        <Composer
+          value={composerDraft}
+          onChange={setComposerDraft}
+          onSend={onSend}
+          busy={busy}
+          safeMode={safeMode}
+          textareaRef={composerRef}
+          onUploadClick={handleUploadClick}
+          onMicClick={handleMicClick}
+        />
+        <ModelFooter />
+      </div>
     </main>
   );
 }

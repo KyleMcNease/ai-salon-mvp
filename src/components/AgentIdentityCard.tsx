@@ -14,7 +14,7 @@ export default function AgentIdentityCard({ agentId }: Props) {
 
   return (
     <section
-      className="flex items-center gap-4 p-4 border-b bg-white/60 backdrop-blur"
+      className="flex items-center gap-4 border-b bg-[#fdf7f2]/80 px-4 py-3 backdrop-blur"
       style={{ borderColor: display.color }}
       aria-label={`${display.displayName} identity`}
     >
@@ -45,7 +45,7 @@ export default function AgentIdentityCard({ agentId }: Props) {
             {display.providerName}
           </span>
         </div>
-        <p className="text-sm text-neutral-700">{display.tagline}</p>
+        <p className="text-sm text-[#5f4a34]">{display.tagline}</p>
         <div className="text-xs text-neutral-500 flex flex-col sm:flex-row sm:items-center sm:gap-4">
           <span>
             <strong className="text-neutral-600">Voice:</strong> {display.voiceStyle}
