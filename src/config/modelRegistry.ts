@@ -112,45 +112,51 @@ export function getModelOptions(params: { safeMode?: boolean; modality?: string 
   const registry = loadModelRegistry();
   const providerMap = new Map(registry.providers.map((provider) => [provider.key, provider]));
 
-  return registry.models
-    .filter((model) => !modality || model.modality === modality)
-    .map((model) => {
-      const provider = providerMap.get(model.provider);
-      if (!provider) {
-        return null;
-      }
-      const localOnly = Boolean(model.local_only || provider.local_only);
-      if (safeMode && !localOnly) {
-        return null;
-      }
+  const options: ModelOption[] = [];
 
-      const adapterKey = PROVIDER_TO_ADAPTER[provider.key];
-      const agentId = PROVIDER_TO_AGENT[provider.key] ?? 'gpt';
-      const hasCredentials = provider.env_key ? Boolean(process.env[provider.env_key]) : true;
+  for (const model of registry.models) {
+    if (modality && model.modality !== modality) {
+      continue;
+    }
 
-      let disabledReason: ModelOption['disabledReason'];
-      if (!adapterKey) {
-        disabledReason = 'adapter_missing';
-      } else if (!hasCredentials && !localOnly) {
-        disabledReason = 'missing_credentials';
-      }
+    const provider = providerMap.get(model.provider);
+    if (!provider) {
+      continue;
+    }
 
-      return {
-        name: model.name,
-        display: model.display,
-        providerKey: provider.key,
-        providerKind: provider.kind,
-        modality: model.modality,
-        description: model.description,
-        localOnly,
-        experimental: Boolean(model.experimental || provider.experimental),
-        adapterKey,
-        agentId,
-        hasCredentials,
-        disabledReason,
-      } satisfies ModelOption;
-    })
-    .filter((option): option is ModelOption => Boolean(option));
+    const localOnly = Boolean(model.local_only || provider.local_only);
+    if (safeMode && !localOnly) {
+      continue;
+    }
+
+    const adapterKey = PROVIDER_TO_ADAPTER[provider.key];
+    const agentId = PROVIDER_TO_AGENT[provider.key] ?? 'gpt';
+    const hasCredentials = provider.env_key ? Boolean(process.env[provider.env_key]) : true;
+
+    let disabledReason: ModelOption['disabledReason'];
+    if (!adapterKey) {
+      disabledReason = 'adapter_missing';
+    } else if (!hasCredentials && !localOnly) {
+      disabledReason = 'missing_credentials';
+    }
+
+    options.push({
+      name: model.name,
+      display: model.display,
+      providerKey: provider.key,
+      providerKind: provider.kind,
+      modality: model.modality,
+      description: model.description,
+      localOnly,
+      experimental: Boolean(model.experimental || provider.experimental),
+      adapterKey,
+      agentId,
+      hasCredentials,
+      disabledReason,
+    });
+  }
+
+  return options;
 }
 
 export function getModelDescriptor(name: string) {

@@ -23,6 +23,9 @@
       }
     ],
     "paths": {
+      "@/providers": [
+        "./src/vendor-shims/providers.tsx"
+      ],
       "@/*": [
         "./src/*"
       ]
@@ -39,6 +42,10 @@
   "exclude": [
     "node_modules",
     "ai-salon",
-    "ai-salon/**/*"
+    "ai-salon/**/*",
+    "agents",
+    "agents/**/*",
+    "ii-agent",
+    "ii-agent/**/*"
   ]
 }

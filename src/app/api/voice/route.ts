@@ -149,7 +149,7 @@ export async function POST(req: NextRequest) {
               {
                 id: artifactId,
                 type: 'AUDIO',
-                uri: `data:${audio.mimeType};base64,${audioBuffer.toString('base64')}`,
+                uri: `data:${result.mimeType};base64,${audioBuffer.toString('base64')}`,
                 mime_type: result.mimeType,
                 message_id: payload.messageId,
                 metadata: {
@@ -183,7 +183,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return new Response(audioBuffer, {
+    return new Response(audioBuffer as unknown as BodyInit, {
       status: 200,
       headers: {
         'Content-Type': result.mimeType,
