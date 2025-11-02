@@ -1,7 +1,7 @@
 // src/app/page.tsx
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 
@@ -24,10 +24,16 @@ import {
   Shield,
   Lightbulb,
 } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 const MEMORY_VERSION = '2025-09-01';
 const DEFAULT_TENANT = 'default';
 const KNOWN_PROVIDERS: Provider[] = ['gpt', 'claude', 'grok', 'opus', 'local'];
+const RAIL_V2_ENABLED = process.env.NEXT_PUBLIC_UI_RAIL_V2 !== 'off';
+const RAIL_STORAGE_KEY = 'ai-salon:rail';
+const MODEL_STORAGE_KEY = 'ai-salon:model';
+const JUMPSTART_STORAGE_KEY = 'ai-salon:jumpstart';
+const VOICE_PREF_STORAGE_KEY = 'ai-salon:voice-enabled';
 
 const isProvider = (value: unknown): value is Provider =>
   typeof value === 'string' && KNOWN_PROVIDERS.includes(value as Provider);
@@ -100,20 +106,32 @@ const createSessionId = () => {
   return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
-export default function Page() {
+function SessionParamListener({ onChange }: { onChange: (value: string | null) => void }) {
   const searchParams = useSearchParams();
-  const sessionParam = searchParams?.get('session');
 
-  const [sessionId, setSessionId] = useState<string | null>(() =>
-    sessionParam && sessionParam.length > 10 ? sessionParam : null
-  );
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  useEffect(() => {
+    onChange(searchParams.get('session'));
+  }, [searchParams, onChange]);
+
+  return null;
+}
+
+export default function Page() {
+  const [sessionParam, setSessionParam] = useState<string | null>(null);
+  const railV2Enabled = RAIL_V2_ENABLED;
+
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [railCollapsed, setRailCollapsed] = useState<boolean>(true);
+  const [railAnnouncement, setRailAnnouncement] = useState('');
   const [safeMode, setSafeMode] = useState(false);
   const lastGlobalModelRef = useRef<string | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [providerHealth, setProviderHealth] = useState<Record<string, { ok: boolean; model?: string }>>({});
+  const [healthTimestamp, setHealthTimestamp] = useState<string | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [healthError, setHealthError] = useState<string | null>(null);
   const toggleSafeMode = useCallback(() => {
     setSafeMode((prev) => {
       if (!prev) {
@@ -125,6 +143,11 @@ export default function Page() {
   const [allMessages, setAllMessages] = useState<Msg[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+  const [jumpstartExpanded, setJumpstartExpanded] = useState<boolean>(false);
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(false);
+  const [sessionCopyStatus, setSessionCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
+  const copyTimeoutRef = useRef<number | null>(null);
   const visibleMessages = useMemo(
     () => (safeMode ? allMessages : allMessages.filter((msg) => msg.scope !== 'local-safe')),
     [allMessages, safeMode]
@@ -143,8 +166,26 @@ export default function Page() {
   const { send, busy, error } = useStreamedChat('/api/chat');
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const useWindowing = visibleMessages.length > 150;
+  const messageVirtualizer = useVirtualizer({
+    count: visibleMessages.length,
+    getScrollElement: () => messageListRef.current,
+    estimateSize: () => 220,
+    overscan: 12,
+  });
   const [composerDraft, setComposerDraft] = useState('');
   const [draftHydrated, setDraftHydrated] = useState(false);
+  const sessionDisplay = useMemo(() => {
+    if (!sessionId) return 'initializing…';
+    if (sessionId.length <= 16) return sessionId;
+    return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
+  }, [sessionId]);
+  const statusSignalClass = useMemo(() => {
+    const hasData = Object.keys(providerHealth).length > 0;
+    if (!hasData) return 'bg-neutral-400';
+    const isHealthy = Object.values(providerHealth).every((provider) => provider.ok);
+    return isHealthy ? 'bg-emerald-500' : 'bg-amber-500';
+  }, [providerHealth]);
 
   useEffect(() => {
     if (sessionParam && sessionParam.length > 10) {
@@ -153,7 +194,55 @@ export default function Page() {
     }
     setSessionId((prev) => prev ?? createSessionId());
   }, [sessionParam]);
-  const handleRailToggle = useCallback(() => setRailCollapsed((prev) => !prev), []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(RAIL_STORAGE_KEY);
+    if (stored === 'open') {
+      setRailCollapsed(false);
+    } else if (stored === 'closed') {
+      setRailCollapsed(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(JUMPSTART_STORAGE_KEY);
+
+    if (stored === 'open') {
+      setJumpstartExpanded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(VOICE_PREF_STORAGE_KEY);
+    if (stored === 'off') {
+      setVoiceEnabled(false);
+    } else if (stored === 'on') {
+      setVoiceEnabled(true);
+    }
+  }, []);
+
+  const handleSessionParamChange = useCallback((value: string | null) => {
+    setSessionParam(value && value.length > 0 ? value : null);
+  }, []);
+  const storedModelRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    storedModelRef.current = window.localStorage.getItem(MODEL_STORAGE_KEY);
+  }, []);
+  const toggleRail = useCallback((forced?: boolean) => {
+    setRailCollapsed((prev) => {
+      const target = typeof forced === 'boolean' ? forced : !prev;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(RAIL_STORAGE_KEY, target ? 'closed' : 'open');
+      }
+      setRailAnnouncement(target ? 'Sidebar collapsed' : 'Sidebar expanded');
+      return target;
+    });
+  }, []);
+  const handleRailToggle = useCallback(() => toggleRail(), [toggleRail]);
   const handleNewChat = useCallback(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
@@ -220,6 +309,81 @@ export default function Page() {
     ],
     [handleAgents, handleNewChat, handleResearch, handleSessions]
   );
+  const handleCopySession = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(sessionId);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = sessionId;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setSessionCopyStatus('copied');
+      if (copyTimeoutRef.current) window.clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = window.setTimeout(() => setSessionCopyStatus('idle'), 1600);
+    } catch (error) {
+      console.warn('Unable to copy session ID', error);
+      setSessionCopyStatus('error');
+      if (copyTimeoutRef.current) window.clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = window.setTimeout(() => setSessionCopyStatus('idle'), 2200);
+    }
+  }, [sessionId]);
+  const handleJumpstartToggle = useCallback(() => {
+    setJumpstartExpanded((prev) => !prev);
+  }, []);
+  const handleVoiceToggle = useCallback(() => {
+    setVoiceEnabled((prev) => !prev);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === '\\') {
+        event.preventDefault();
+        toggleRail();
+      }
+      if (event.key === 'Escape' && !railCollapsed && window.matchMedia('(max-width: 1023px)').matches) {
+        toggleRail(true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [railCollapsed, toggleRail]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(JUMPSTART_STORAGE_KEY, jumpstartExpanded ? 'open' : 'closed');
+  }, [jumpstartExpanded]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(VOICE_PREF_STORAGE_KEY, voiceEnabled ? 'on' : 'off');
+  }, [voiceEnabled]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !selectedModel) return;
+    window.localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
+  }, [selectedModel]);
+
+  useEffect(() => {
+    storedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        window.clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const draftKey = useMemo(() => (sessionId ? `chat-draft-${sessionId}` : null), [sessionId]);
   const tenantId = DEFAULT_TENANT;
@@ -260,6 +424,8 @@ export default function Page() {
   }, [composerDraft, draftHydrated, draftKey]);
 
   const loadHealth = useCallback(async () => {
+    setHealthLoading(true);
+    setHealthError(null);
     try {
       const res = await fetch('/api/health', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -274,16 +440,24 @@ export default function Page() {
         hf: { ok: true, model: providers?.hf?.model ?? 'hf' },
       };
       setProviderHealth(map);
+      setHealthTimestamp(typeof data?.time === 'string' ? data.time : new Date().toISOString());
     } catch (error) {
-      setProviderHealth((prev) => (Object.keys(prev).length ? prev : {
-        openai: { ok: false },
-        anthropic: { ok: false },
-        xai: { ok: false },
-        vllm: { ok: true },
-        local: { ok: true },
-        hf: { ok: false },
-      }));
+      setProviderHealth((prev) =>
+        Object.keys(prev).length
+          ? prev
+          : {
+              openai: { ok: false },
+              anthropic: { ok: false },
+              xai: { ok: false },
+              vllm: { ok: true },
+              local: { ok: true },
+              hf: { ok: false },
+            }
+      );
+      setHealthTimestamp(null);
+      setHealthError(error instanceof Error ? error.message : 'Unable to reach health service');
     }
+    setHealthLoading(false);
   }, []);
 
   const loadModels = useCallback(
@@ -320,10 +494,18 @@ export default function Page() {
           return enabled?.name ?? (options[0]?.name ?? null);
         };
 
+        const storedPreference = storedModelRef.current
+          ? options.find((option) => option.name === storedModelRef.current && !option.disabledReason)
+          : undefined;
+
         if (mode) {
-          setSelectedModel(pickFirstEnabled());
+          const localOption =
+            storedPreference && storedPreference.localOnly ? storedPreference : options.find((option) => option.localOnly);
+          setSelectedModel(localOption?.name ?? pickFirstEnabled());
         } else {
-          const target = lastGlobalModelRef.current
+          const target = storedPreference
+            ? storedPreference
+            : lastGlobalModelRef.current
             ? options.find(
                 (option) => option.name === lastGlobalModelRef.current && !option.disabledReason
               )
@@ -522,7 +704,6 @@ export default function Page() {
 
       if (!res.ok) {
         if (res.status === 404) {
-          setAllMessages([]);
           setHistoryLoaded(true);
           return;
         }
@@ -577,7 +758,12 @@ export default function Page() {
           } satisfies Msg;
         });
 
-      setAllMessages(chatMessages);
+      setAllMessages((prev) => {
+        if (chatMessages.length === 0) {
+          return prev;
+        }
+        return chatMessages;
+      });
 
       const lastAssistantWithModel = [...chatMessages]
         .reverse()
@@ -598,6 +784,9 @@ export default function Page() {
 
   const requestVoice = useCallback(
     async (message: Msg, options: { force?: boolean } = {}) => {
+      if (!voiceEnabled) {
+        return;
+      }
       if (message.role !== 'assistant') return;
       if (!message.content?.trim()) return;
       if (!sessionId) return;
@@ -675,7 +864,7 @@ export default function Page() {
         throw err;
       }
     },
-    [loadHistory, safeMode, sessionId, tenantId]
+    [loadHistory, safeMode, sessionId, tenantId, voiceEnabled]
   );
 
   const pollHeygenStatus = useCallback(
@@ -848,6 +1037,7 @@ export default function Page() {
   }, [visibleMessages]);
 
   useEffect(() => {
+    if (!voiceEnabled) return;
     visibleMessages.forEach((msg) => {
       if (msg.role !== 'assistant') return;
       if (!msg.content?.trim()) return;
@@ -857,7 +1047,7 @@ export default function Page() {
         requestVoice(msg).catch((err) => console.warn('Voice generation failed', err));
       }
     });
-  }, [visibleMessages, requestVoice]);
+  }, [visibleMessages, requestVoice, voiceEnabled]);
 
   async function onSend(text: string) {
     const { prompt, modelMentions, toolOverrides } = extractMentions(text);
@@ -936,8 +1126,16 @@ export default function Page() {
       );
     };
 
+    let streamingStarted = false;
+
     const handleEvent = (event: StreamEvent) => {
-      if (event.type === 'delta') updateAssistant(event.value);
+      if (event.type === 'delta') {
+        if (!streamingStarted) {
+          streamingStarted = true;
+          setLiveAnnouncement('Assistant responding…');
+        }
+        updateAssistant(event.value);
+      }
       if (event.type === 'error') setHistoryError(event.data);
       if (event.type === 'attribution') {
         const label = event.name ?? event.model;
@@ -966,12 +1164,141 @@ export default function Page() {
     } finally {
       voiceRequests.current.delete(assistantId);
       await loadHistory();
+      if (streamingStarted) {
+        setLiveAnnouncement('Assistant response ready.');
+      }
     }
     return success;
   }
 
+  const renderMessage = (msg: Msg) => {
+    if (msg.role === 'assistant') {
+      const identity = getAgentDisplay(msg.agentId);
+      const voiceStatus = voiceState[msg.id];
+      const heygenStatus = heygenState[msg.id] ?? { status: 'idle' };
+      const playable = msg.audioUri || (voiceStatus?.status === 'ready' ? voiceStatus.url : undefined);
 
-  return (
+      return (
+        <div className="flex max-w-3xl flex-col gap-3 rounded-2xl border border-[#eadfce] bg-[#fdf9f4] px-4 py-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+                <div className="relative h-10 w-10 overflow-hidden rounded-full border border-[#eadfce] bg-white shadow-sm">
+                  <Image
+                    src={identity.avatarUrl ?? '/avatars/default.png'}
+                  alt={`${identity.displayName} avatar`}
+                  fill
+                  sizes="40px"
+                  className="object-cover"
+                />
+              </div>
+              <div className="space-y-1 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-neutral-700" style={{ color: identity.color }}>
+                    {identity.displayName}
+                  </span>
+                  <span className="text-xs uppercase tracking-wide text-neutral-400">
+                    {identity.providerName}
+                  </span>
+                  {msg.modelName && (
+                    <span className="text-[10px] uppercase text-neutral-400">{msg.modelName}</span>
+                  )}
+                  <span className="text-xs text-neutral-400">
+                    {msg.createdAt ? new Date(msg.createdAt).toLocaleString() : 'moments ago'}
+                  </span>
+                  {msg.scope === 'local-safe' && (
+                    <span className="text-[10px] uppercase tracking-wide text-[#8a693c]">Local Safe</span>
+                  )}
+                </div>
+                {identity.voiceStyle && (
+                  <div className="text-xs text-neutral-400">
+                    Voice: <span className="text-neutral-600">{identity.voiceStyle}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="whitespace-pre-wrap text-neutral-800 leading-relaxed">{msg.content || '…'}</div>
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <button
+              type="button"
+              className="rounded-lg border border-[#dfd3c1] px-3 py-1 text-neutral-600 transition hover:border-[#cbb79a] hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#806444]"
+              onClick={() => requestVoice(msg)}
+              disabled={voiceStatus?.status === 'loading' || !voiceEnabled}
+              aria-disabled={voiceEnabled ? undefined : true}
+            >
+              {!voiceEnabled
+                ? 'Voice disabled'
+                : voiceStatus?.status === 'loading'
+                ? 'Generating audio…'
+                : voiceStatus?.status === 'ready'
+                ? 'Replay voice'
+                : voiceStatus?.status === 'error'
+                ? 'Retry voice'
+                : msg.audioUri
+                ? 'Play voice'
+                : 'Generate voice'}
+            </button>
+            {voiceStatus?.status === 'error' && (
+              <span className="text-red-600">
+                {voiceStatus.error}{' '}
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => requestVoice(msg, { force: true })}
+                >
+                  Retry
+                </button>
+              </span>
+            )}
+            {playable && (
+              <audio controls src={playable} className="w-full max-w-md rounded-lg border border-[#eadfce]" />
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+            <span>HeyGen avatar:</span>
+            {heygenStatus.status === 'ready' && heygenStatus.videoUrl ? (
+              <a
+                href={heygenStatus.videoUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline text-neutral-700"
+              >
+                Open clip
+              </a>
+            ) : heygenStatus.status === 'processing' ? (
+              <span>Rendering…</span>
+            ) : heygenStatus.status === 'error' ? (
+              <span className="text-red-600">{heygenStatus.error}</span>
+            ) : (
+              <span className="text-neutral-400">Not generated</span>
+            )}
+            <button
+              type="button"
+              className="rounded-lg border border-[#dfd3c1] px-3 py-1 text-neutral-600 transition hover:border-[#cbb79a] hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#806444]"
+              onClick={() => requestHeygen(msg)}
+              disabled={safeMode || heygenStatus.status === 'processing' || heygenStatus.status === 'requesting'}
+            >
+              {safeMode
+                ? 'Locked in Safe Mode'
+                : heygenStatus.status === 'processing' || heygenStatus.status === 'requesting'
+                ? 'Working…'
+                : 'Generate clip'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="ml-auto max-w-3xl rounded-2xl border border-[#d9e4ff] bg-[#eef4ff] px-4 py-3 text-right shadow-sm">
+        <div className="text-sm font-semibold text-blue-600">You</div>
+        <div className="whitespace-pre-wrap text-neutral-800">{msg.content}</div>
+      </div>
+    );
+  };
+
+
+  const renderLegacyLayout = () => (
     <main className="flex h-screen bg-[#f6f0ea] text-neutral-900">
       <aside
         className={`${
@@ -1350,5 +1677,429 @@ export default function Page() {
         <ModelFooter />
       </div>
     </main>
+  );
+
+  const renderRailLayout = () => {
+    const activeIdentity = getAgentDisplay(activeAgent);
+    const statusProviders = [
+      { key: 'openai', label: 'GPT' },
+      { key: 'anthropic', label: 'Claude' },
+      { key: 'xai', label: 'Grok' },
+      { key: 'local', label: 'Local' },
+    ] as const;
+
+    return (
+      <main className="relative flex h-screen bg-[#f6f0ea] text-neutral-900">
+        <span aria-live="polite" className="sr-only">
+          {railAnnouncement}
+        </span>
+        <span aria-live="polite" className="sr-only">
+          {liveAnnouncement}
+        </span>
+        <aside
+          className={`fixed inset-y-0 left-0 z-30 w-72 transform transition-transform duration-200 ease-out md:w-80 ${
+            railCollapsed ? '-translate-x-full md:-translate-x-full' : 'translate-x-0 md:translate-x-0'
+          }`}
+          aria-hidden={railCollapsed ? 'true' : 'false'}
+        >
+          <div className="flex h-full flex-col border-r border-[#eadfce] bg-[#fdf7f1]/95 backdrop-blur">
+            <div className="flex items-start justify-between gap-3 border-b border-[#eadfce] px-4 py-4">
+              <div className="space-y-1">
+                <span className="text-sm font-semibold text-neutral-600">Workspace</span>
+                <div className="flex items-center gap-2 text-xs text-neutral-500">
+                  <span className={`h-2 w-2 rounded-full ${statusSignalClass}`} aria-hidden="true" />
+                  <span>Status</span>
+                  {healthTimestamp && (
+                    <span className="text-[10px] uppercase text-neutral-400">
+                      {new Date(healthTimestamp).toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-neutral-500">
+                  Safe Shelf: {safeShelfEntries.length}{' '}
+                  <span className={safeMode ? 'text-emerald-600' : 'text-neutral-500'}>
+                    {safeMode ? '• Safe Mode on' : '• Safe Mode off'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleRailToggle}
+                className="rounded-lg border border-[#e7d7c2] bg-white p-2 text-neutral-500 transition hover:text-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                aria-label="Collapse sidebar"
+                aria-expanded={!railCollapsed}
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            </div>
+            <nav className="flex-1 space-y-6 overflow-y-auto px-4 py-5">
+              <section className="space-y-2">
+                <div className="flex items-center justify-between text-xs uppercase tracking-wide text-[#a2703d]">
+                  <span>Session</span>
+                  <span className="text-[11px] font-medium text-neutral-500">
+                    {sessionCopyStatus === 'copied'
+                      ? 'Copied'
+                      : sessionCopyStatus === 'error'
+                      ? 'Copy failed'
+                      : 'Copy ID'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopySession}
+                  disabled={!sessionId}
+                  className="flex w-full items-center justify-between rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-left text-sm font-mono text-neutral-700 transition hover:border-[#cfb48d] hover:bg-[#fff9ef] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span>{sessionDisplay}</span>
+                  <span className="text-xs text-neutral-400">Copy</span>
+                </button>
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-neutral-700">Models</h2>
+                  {modelsLoading && <span className="text-xs text-neutral-400">Loading…</span>}
+                </div>
+                <p className="text-xs text-neutral-500">Pick where responses stream from.</p>
+                <select
+                  id="model-picker-rail"
+                  className="w-full rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-sm shadow-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347] disabled:bg-neutral-100"
+                  value={selectedModel ?? ''}
+                  onChange={(event) => setSelectedModel(event.target.value || null)}
+                  disabled={modelsLoading || busy || modelOptions.length === 0}
+                >
+                  {modelOptions.length === 0 ? (
+                    <option value="" disabled>
+                      {modelsLoading ? 'Loading models…' : 'No models available'}
+                    </option>
+                  ) : (
+                    modelOptions.map((model) => (
+                      <option key={model.name} value={model.name} disabled={Boolean(model.disabledReason)}>
+                        {model.display}
+                        {model.disabledReason === 'missing_credentials'
+                          ? ' (configure API key)'
+                          : model.disabledReason === 'adapter_missing'
+                          ? ' (unsupported)'
+                          : model.experimental
+                          ? ' (experimental)'
+                          : ''}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <ModelStatusBadge
+                  model={selectedModelOption}
+                  loading={modelsLoading}
+                  providerHealth={providerHealth}
+                />
+                {selectedModelOption?.description && (
+                  <p className="text-xs text-neutral-500">{selectedModelOption.description}</p>
+                )}
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-neutral-700">Jump-start</h2>
+                  <button
+                    type="button"
+                    onClick={handleJumpstartToggle}
+                    className="text-xs font-medium text-[#a2703d] underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                  >
+                    {jumpstartExpanded ? 'Show less' : 'Show more'}
+                  </button>
+                </div>
+                {suggestionsLoading ? (
+                  <div className="space-y-2">
+                    {Array.from({ length: jumpstartExpanded ? 4 : 2 }).map((_, index) => (
+                      <div key={index} className="h-12 animate-pulse rounded-lg border border-[#e7d7c2] bg-[#f5ede1]" />
+                    ))}
+                  </div>
+                ) : suggestions.length > 0 ? (
+                  <div className="space-y-2">
+                    {(jumpstartExpanded ? suggestions : suggestions.slice(0, 2)).map((suggestion) => (
+                      <button
+                        key={suggestion.id}
+                        type="button"
+                        onClick={() => handleSuggestionSelect(suggestion.prompt)}
+                        className="w-full rounded-lg border border-[#e2cfb7] bg-white px-3 py-2 text-left text-sm text-[#443629] shadow-sm transition hover:border-[#cfb48d] hover:bg-[#fff9ef] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                      >
+                        <div className="font-semibold">{suggestion.title}</div>
+                        <p className="text-xs text-neutral-500">{suggestion.body}</p>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-neutral-500">Add prompts to get started quickly.</p>
+                )}
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-neutral-700">Active agent</h2>
+                  <button
+                    type="button"
+                    onClick={handleAgents}
+                    className="text-xs font-medium text-[#a2703d] underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                  >
+                    Switch agent
+                  </button>
+                </div>
+                <AgentIdentityCard agentId={activeAgent} />
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-neutral-700">Research board</h2>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={handleResearch}
+                    className="flex items-center justify-between rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-left text-sm transition hover:border-[#cfb48d] hover:bg-[#fff9ef] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                    disabled={safeMode}
+                    title={safeMode ? 'Unavailable while Safe Mode is on' : undefined}
+                  >
+                    <span>Deep Survey</span>
+                    {safeMode && <span className="text-xs text-neutral-400">Safe Mode</span>}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => console.info('Idea Spark coming soon.')}
+                    className="flex items-center justify-between rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-left text-sm transition hover:border-[#cfb48d] hover:bg-[#fff9ef] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                    disabled={safeMode}
+                    title={safeMode ? 'Unavailable while Safe Mode is on' : 'Open Idea Spark'}
+                  >
+                    <span>Idea Spark</span>
+                    {safeMode && <span className="text-xs text-neutral-400">Safe Mode</span>}
+                  </button>
+                </div>
+              </section>
+
+              <section className="space-y-3">
+                <h2 className="text-sm font-semibold text-neutral-700">Library</h2>
+                <div className="grid gap-2">
+                  <button
+                    type="button"
+                    onClick={handleResearch}
+                    className="flex items-center justify-between rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-left text-sm transition hover:border-[#cfb48d] hover:bg-[#fff9ef] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                  >
+                    <span>Papers &amp; Notes</span>
+                    <span className="text-xs text-neutral-400">Open</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSessions}
+                    className="flex items-center justify-between rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-left text-sm transition hover:border-[#cfb48d] hover:bg-[#fff9ef] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                  >
+                    <span>Sessions</span>
+                    <span className="text-xs text-neutral-400">History</span>
+                  </button>
+                  <div className="rounded-lg border border-[#e7d7c2] bg-[#f9f1e4]/70 px-3 py-2 text-sm text-[#5f4a34]">
+                    Safe Shelf keeps {safeShelfEntries.length} local notes ready to resurface.
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-neutral-700">Status</h2>
+                  <button
+                    type="button"
+                    onClick={loadHealth}
+                    className="rounded border border-[#e7d7c2] px-2 py-1 text-xs text-neutral-600 transition hover:border-[#cfb48d] hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                    disabled={healthLoading}
+                  >
+                    {healthLoading ? 'Checking…' : 'Refresh'}
+                  </button>
+                </div>
+                {healthError && <p className="text-xs text-red-600">{healthError}</p>}
+                <ul className="space-y-2">
+                  {statusProviders.map((provider) => {
+                    const entry = providerHealth[provider.key] ?? null;
+                    return (
+                      <li
+                        key={provider.key}
+                        className="flex items-center justify-between rounded-lg border border-[#e7d7c2] bg-white px-3 py-2 text-sm"
+                      >
+                        <span className="font-medium text-neutral-700">{provider.label}</span>
+                        <span className="flex items-center gap-2 text-xs text-neutral-500">
+                          <span
+                            className={`h-2.5 w-2.5 rounded-full ${
+                              entry ? (entry.ok ? 'bg-emerald-500' : 'bg-amber-500') : 'bg-neutral-400'
+                            }`}
+                          />
+                          <span>{entry?.model ?? '—'}</span>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {healthTimestamp && (
+                  <p className="text-xs text-neutral-400">Last check {new Date(healthTimestamp).toLocaleTimeString()}</p>
+                )}
+              </section>
+
+              <section className="space-y-3">
+                <h2 className="text-sm font-semibold text-neutral-700">Settings</h2>
+                <div className="space-y-2 text-sm text-neutral-600">
+                  <button
+                    type="button"
+                    onClick={handleVoiceToggle}
+                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347] ${
+                      voiceEnabled ? 'border-[#dfd3c1] bg-white hover:border-[#cfb48d]' : 'border-dashed border-[#dfd3c1] bg-[#faf4eb]'
+                    }`}
+                    aria-pressed={voiceEnabled}
+                  >
+                    <span>Voice responses</span>
+                    <span className="text-xs text-neutral-500">{voiceEnabled ? 'On' : 'Off'}</span>
+                  </button>
+                  <p className="text-xs text-neutral-500">
+                    Mic shortcuts: ⌘/Ctrl+U to attach files, Esc to cancel recording.
+                  </p>
+                </div>
+              </section>
+
+              <section className="space-y-2">
+                <div className="flex items-center justify-between text-xs uppercase tracking-wide text-[#a2703d]">
+                  <span>Safe Shelf</span>
+                  <span>{safeShelfEntries.length}</span>
+                </div>
+                {safeShelfEntries.length === 0 ? (
+                  <p className="text-xs text-neutral-500">No local-safe memories captured yet.</p>
+                ) : (
+                  <ul className="space-y-2 text-xs text-neutral-600">
+                    {safeShelfPreview.map((entry) => {
+                      const created = entry.createdAt ? new Date(entry.createdAt) : null;
+                      const timestamp =
+                        created && !Number.isNaN(created.getTime()) ? created.toLocaleTimeString() : 'recently';
+                      return (
+                        <li key={entry.id} className="rounded-lg border border-[#e4d4c0] bg-[#fdfaf6] p-2 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold">{entry.role === 'assistant' ? 'Assistant' : 'You'}</span>
+                            <span className="text-[11px] text-neutral-400">{timestamp}</span>
+                          </div>
+                          <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-[#5f4a34]">{entry.content}</p>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+            </nav>
+          </div>
+        </aside>
+        {!railCollapsed && (
+          <button
+            type="button"
+            className="fixed inset-0 z-20 bg-black/20 backdrop-blur-sm md:hidden"
+            onClick={() => toggleRail(true)}
+            aria-label="Dismiss sidebar"
+          />
+        )}
+        <div
+          className={`flex w-full flex-col overflow-hidden bg-[#f8f2eb] transition-transform duration-200 ease-out ${
+            railCollapsed ? 'md:translate-x-0' : 'md:translate-x-[20rem]'
+          }`}
+        >
+          <header className="sticky top-0 z-10 border-b border-[#eadfce] bg-[#fdf9f4]/90 backdrop-blur">
+            <div className="flex items-center justify-between px-4 py-3 md:px-6">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleRailToggle}
+                  className="inline-flex items-center justify-center rounded-lg border border-[#e7d7c2] bg-white p-2 text-neutral-500 transition hover:text-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347]"
+                  aria-label={railCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
+                  aria-expanded={!railCollapsed}
+                >
+                  {railCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+                </button>
+                <h1 className="text-lg font-semibold md:text-2xl">AI Salon</h1>
+                {railCollapsed && <span className={`ml-1 h-2 w-2 rounded-full ${statusSignalClass}`} aria-hidden="true" />}
+              </div>
+              <button
+                type="button"
+                onClick={toggleSafeMode}
+                className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6347] ${
+                  safeMode
+                    ? 'border border-emerald-500/70 bg-emerald-500 text-white hover:bg-emerald-400'
+                    : 'border border-[#e0d5c2] bg-white text-neutral-600 hover:bg-[#f8f1e7]'
+                }`}
+                aria-pressed={safeMode}
+              >
+                {safeMode ? 'Safe Mode Enabled' : 'Safe Mode Off'}
+              </button>
+            </div>
+          </header>
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <div
+              ref={messageListRef}
+              className="relative flex-1 overflow-y-auto px-4 py-4 md:px-6"
+              aria-live="polite"
+            >
+              {!historyLoaded ? (
+                <div className="space-y-3">
+                  {Array.from({ length: 3 }).map((_, index) => (
+                    <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#eadfce] bg-[#fdf9f4]" />
+                  ))}
+                </div>
+              ) : visibleMessages.length === 0 ? (
+                <div className="mx-auto mt-10 max-w-xl rounded-2xl border border-[#eadfce] bg-[#fdf9f4] px-5 py-6 text-center text-sm text-[#5f4a34] shadow-sm">
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-[#eadfce] bg-white px-3 py-1 text-xs text-neutral-600">
+                    <span className="font-medium">{activeIdentity.displayName}</span>
+                    <span className="text-neutral-400">{activeIdentity.providerName}</span>
+                  </div>
+                  Ready when you are. Open the sidebar for quick actions.
+                </div>
+              ) : useWindowing ? (
+                <div style={{ height: messageVirtualizer.getTotalSize() }} className="relative">
+                  {messageVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const msg = visibleMessages[virtualRow.index];
+                    return (
+                      <div
+                        key={msg.id}
+                        className="absolute left-0 right-0 pb-4"
+                        style={{ transform: `translateY(${virtualRow.start}px)` }}
+                      >
+                        {renderMessage(msg)}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {visibleMessages.map((msg) => (
+                    <div key={msg.id}>{renderMessage(msg)}</div>
+                  ))}
+                </div>
+              )}
+              {historyError && <div className="mt-4 text-sm text-red-600">{historyError}</div>}
+              {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
+            </div>
+            <Composer
+              value={composerDraft}
+              onChange={setComposerDraft}
+              onSend={onSend}
+              busy={busy}
+              safeMode={safeMode}
+              textareaRef={composerRef}
+              onUploadClick={handleUploadClick}
+              onMicClick={handleMicClick}
+              voiceEnabled={voiceEnabled}
+            />
+          </div>
+        </div>
+      </main>
+    );
+  };
+
+  const layout = railV2Enabled ? renderRailLayout() : renderLegacyLayout();
+
+  return (
+    <>
+      <Suspense fallback={null}>
+        <SessionParamListener onChange={handleSessionParamChange} />
+      </Suspense>
+      {layout}
+    </>
   );
 }

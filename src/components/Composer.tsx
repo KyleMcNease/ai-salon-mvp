@@ -15,6 +15,7 @@ type Props = {
   textareaRef?: Ref<HTMLTextAreaElement>;
   onUploadClick?: () => void;
   onMicClick?: () => void;
+  voiceEnabled?: boolean;
 };
 
 export default function Composer({
@@ -26,6 +27,7 @@ export default function Composer({
   textareaRef,
   onUploadClick,
   onMicClick,
+  voiceEnabled = true,
 }: Props) {
   const [err, setErr] = useState<string | null>(null);
 
@@ -46,10 +48,7 @@ export default function Composer({
     <div className="border-t border-[#eadfce] bg-[#fdf7f1]/90 backdrop-blur">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 px-4 py-4">
         <div className="flex items-center justify-between text-xs text-neutral-500">
-          <span>
-            Press <kbd className="rounded border px-1 text-[10px]">⌘</kbd>/<kbd className="rounded border px-1 text-[10px]">Ctrl</kbd> +{' '}
-            <kbd className="rounded border px-1 text-[10px]">Enter</kbd> to send.
-          </span>
+          <span />
           <span className="hidden sm:block">
             Mention models with <code>@model</code>
           </span>
@@ -75,18 +74,24 @@ export default function Composer({
             value={value}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                event.preventDefault();
-                handleSend();
-              }
+              if (event.key !== 'Enter') return;
+              if (event.shiftKey) return;
+              if (event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              handleSend();
             }}
           />
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={onMicClick}
-              className="rounded-lg p-2 text-neutral-500 transition hover:bg-[#f2e7d8] hover:text-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7c6347]"
-              title="Start voice capture"
+              onClick={voiceEnabled ? onMicClick : undefined}
+              className={`rounded-lg p-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7c6347] ${
+                voiceEnabled
+                  ? 'text-neutral-500 hover:bg-[#f2e7d8] hover:text-neutral-800'
+                  : 'cursor-not-allowed text-neutral-300 opacity-70'
+              }`}
+              title={voiceEnabled ? 'Start voice capture' : 'Voice responses are disabled'}
+              aria-disabled={!voiceEnabled}
             >
               <Mic className="h-5 w-5" />
             </button>
