@@ -6,7 +6,7 @@ type RuntimeFactory = () => any;
 
 function resolveRuntimeFactory(): RuntimeFactory {
   const override = process.env.SCRIBE_RUNTIME?.trim();
-  if (!override || override === 'local' || override === 'scribe') {
+  if (!override || override === 'local' || override === 'scribe' || override === 'ii') {
     return makeScribeRuntime;
   }
 
