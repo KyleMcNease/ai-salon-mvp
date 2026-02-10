@@ -282,8 +282,10 @@ def create_custom_persona(
 def create_participant(
     persona: SalonPersona,
     llm_model: str = "claude-sonnet-4",
+    provider: str = "anthropic",
     temperature: float = 0.7,
     max_tokens: int = 1000,
+    llm_config: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> SalonParticipant:
     """Create a salon participant from a persona.
@@ -298,18 +300,36 @@ def create_participant(
     Returns:
         SalonParticipant instance
     """
-    participant_id = f"{persona.id}_{llm_model.replace('.', '_')}"
+    config: Dict[str, Any]
+    if llm_config is not None:
+        config = dict(llm_config)
+        config.setdefault("model", llm_model)
+        config.setdefault("provider", provider)
+        config.setdefault("temperature", temperature)
+        config.setdefault("max_tokens", max_tokens)
+    else:
+        config = {
+            "provider": provider,
+            "model": llm_model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+    model_name = str(config.get("model") or llm_model)
+    participant_id = f"{persona.id}_{model_name.replace('.', '_')}"
 
     return SalonParticipant(
         id=participant_id,
         persona=persona,
-        llm_config={
-            "model": llm_model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
+        llm_config=config,
         metadata=metadata or {},
     )
+
+
+def create_persona(*args: Any, **kwargs: Any) -> SalonPersona:
+    """Backward-compatible alias for create_custom_persona."""
+
+    return create_custom_persona(*args, **kwargs)
 
 
 from .salon_manager import SalonTopic  # noqa: E402
@@ -320,6 +340,7 @@ __all__ = [
     "SalonParticipant",
     "SalonTopic",
     "get_default_personas",
+    "create_custom_persona",
     "create_persona",
     "create_participant",
 ]

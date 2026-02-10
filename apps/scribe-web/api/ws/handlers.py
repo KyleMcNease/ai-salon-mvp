@@ -72,12 +72,10 @@ class SalonWebSocketHandlers:
                 continue
             participant = create_participant(
                 persona=persona,
-                llm_config={
-                    "provider": "anthropic",
-                    "model": "claude-sonnet-4-5",
-                    "temperature": 0.7,
-                    "max_tokens": 1000,
-                },
+                llm_model="claude-sonnet-4-5",
+                temperature=0.7,
+                max_tokens=1000,
+                metadata={"provider": "anthropic"},
             )
             participants.append(participant)
 
@@ -105,7 +103,7 @@ class SalonWebSocketHandlers:
 
         consensus_engine = ConsensusEngine(
             participants=[p.id for p in participants],
-            threshold=0.6,
+            consensus_threshold=0.6,
         )
 
         llm_invoker = LLMInvoker(router=self.router)
@@ -152,13 +150,25 @@ class SalonWebSocketHandlers:
         """Compute the current consensus snapshot."""
 
         runtime = self._require_runtime()
-        messages = runtime.manager.get_messages()
-        consensus = runtime.consensus_engine.analyze_consensus(messages)
+        messages = [
+            {
+                "participant_id": message.participant_id,
+                "content": message.content,
+                "turn_number": message.turn_number,
+                "metadata": message.metadata,
+            }
+            for message in runtime.manager.get_messages()
+        ]
+        consensus = runtime.consensus_engine.analyze_messages(messages)
 
         return SalonConsensusPayload(
             level=consensus.level.value,
             consensus_points=[
-                {"point": point.text, "support": point.support}
+                {
+                    "statement": point.statement,
+                    "support_percentage": round(point.confidence * 100, 2),
+                    "supporting_participants": sorted(point.supporting_participants),
+                }
                 for point in consensus.consensus_points
             ],
             areas_of_disagreement=consensus.areas_of_disagreement,
@@ -206,7 +216,7 @@ class SalonWebSocketHandlers:
             logger.error("Participant %s not registered with salon %s", participant_id, runtime.salon_id)
             return
 
-        history = runtime.manager.format_conversation_history()
+        history = runtime.manager.get_conversation_history()
         persona = runtime.personas.get(participant.persona_id)
         if not persona:
             logger.error("Persona %s missing for participant %s", participant.persona_id, participant_id)

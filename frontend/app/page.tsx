@@ -1,13 +1,7 @@
 "use client";
 
-import { Suspense } from "react";
-
-import Home from "@/components/home";
+import DuetWorkbench from "@/components/duet-workbench";
 
 export default function Page() {
-  return (
-    <Suspense fallback={<></>}>
-      <Home />
-    </Suspense>
-  );
+  return <DuetWorkbench />;
 }
