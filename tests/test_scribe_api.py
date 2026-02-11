@@ -26,6 +26,16 @@ class StubRouter:
 def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(scribe_api_app, "shared_sessions", SharedSessionStore(root=tmp_path / "shared_sessions"))
     monkeypatch.setattr(scribe_api_app, "router", StubRouter())
+    monkeypatch.setattr(
+        scribe_api_app,
+        "_PERSONA_VOICE_OVERRIDES_PATH",
+        tmp_path / "persona_voice_overrides.json",
+    )
+    monkeypatch.setattr(
+        scribe_api_app,
+        "_RESEARCH_HANDOFF_ROOT",
+        tmp_path / "research_handoffs",
+    )
     return TestClient(scribe_api_app.app)
 
 
@@ -99,3 +109,70 @@ def test_websocket_query_flow_matches_frontend_contract(api_client: TestClient) 
         assert first_thinking["type"] == "agent_thinking"
         assert second_thinking["type"] == "agent_thinking"
         assert completed["type"] == "agent_response"
+
+
+def test_research_handoff_and_ingest_flow(api_client: TestClient) -> None:
+    api_client.post(
+        "/api/duet/turn",
+        json={
+            "session_id": "session-research",
+            "user_message": "Find prior work on hypothesis ranking methods",
+            "agents": [{"provider": "openai", "model": "gpt-5", "profile_id": "openai:default", "label": "Codex"}],
+        },
+    )
+
+    handoff_response = api_client.post(
+        "/api/research/handoff",
+        json={
+            "session_id": "session-research",
+            "mode": "hybrid",
+            "include_recent_messages": 4,
+        },
+    )
+    assert handoff_response.status_code == 200
+    handoff = handoff_response.json()["handoff"]
+    assert handoff["session_id"] == "session-research"
+    assert handoff["handoff_id"]
+    assert handoff["history"]
+
+    fetch_response = api_client.get(f"/api/research/handoff/{handoff['handoff_id']}")
+    assert fetch_response.status_code == 200
+    assert fetch_response.json()["handoff"]["handoff_id"] == handoff["handoff_id"]
+
+    ingest_response = api_client.post(
+        "/api/research/ingest",
+        json={
+            "session_id": "session-research",
+            "source": "research-app",
+            "mode": "hybrid",
+            "title": "Hypothesis ranking literature",
+            "summary": "Collected related papers and scoring approaches.",
+            "findings": ["Elo variants work well for pairwise hypothesis judgments."],
+            "artifacts": [{"label": "paper-list", "url": "https://example.org/papers"}],
+        },
+    )
+    assert ingest_response.status_code == 200
+    session_messages = ingest_response.json()["session"]["messages"]
+    assert session_messages[-1]["speaker"] == "Research"
+    assert "Hypothesis ranking literature" in session_messages[-1]["content"]
+
+
+def test_persona_and_voice_endpoints(api_client: TestClient) -> None:
+    personas_response = api_client.get("/api/personas")
+    assert personas_response.status_code == 200
+    personas = personas_response.json()["personas"]
+    assert personas
+    persona_ids = {item["id"] for item in personas}
+    assert "researcher" in persona_ids
+
+    voices_response = api_client.get("/api/voices")
+    assert voices_response.status_code == 200
+    voices = voices_response.json()["voices"]
+    assert "alloy" in voices
+
+    update_response = api_client.put(
+        "/api/personas/researcher/voice",
+        json={"voice_id": "nova"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["persona"]["voice_id"] == "nova"

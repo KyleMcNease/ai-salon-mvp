@@ -25,6 +25,16 @@ type ProviderProfile = {
   enabled: boolean;
 };
 
+type Persona = {
+  id: string;
+  name: string;
+  role: string;
+  voice_id?: string | null;
+  description?: string;
+};
+
+type ResearchMode = "hybrid" | "novix" | "llnl" | "google";
+
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-duet",
@@ -42,6 +52,24 @@ function randomSessionId(): string {
   return `session-${Date.now()}`;
 }
 
+function safeBuildUrl(base: string, params: Record<string, string>): string {
+  try {
+    const url = new URL(base);
+    for (const [key, value] of Object.entries(params)) {
+      if (value) {
+        url.searchParams.set(key, value);
+      }
+    }
+    return url.toString();
+  } catch {
+    const query = new URLSearchParams(params).toString();
+    if (!query) {
+      return base;
+    }
+    return base.includes("?") ? `${base}&${query}` : `${base}?${query}`;
+  }
+}
+
 export default function DuetWorkbench() {
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const researchAppDefault = process.env.NEXT_PUBLIC_RESEARCH_APP_URL || "";
@@ -49,6 +77,7 @@ export default function DuetWorkbench() {
   const [quickMode, setQuickMode] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showResearch, setShowResearch] = useState(false);
+  const [showPersonas, setShowPersonas] = useState(false);
   const [embedResearch, setEmbedResearch] = useState(false);
 
   const [sessionId, setSessionId] = useState<string>(() => randomSessionId());
@@ -56,6 +85,14 @@ export default function DuetWorkbench() {
     "You are part of a private SCRIBE duet. Keep responses concise, concrete, and build on prior turns."
   );
   const [researchUrl, setResearchUrl] = useState(researchAppDefault);
+  const [researchMode, setResearchMode] = useState<ResearchMode>("hybrid");
+  const [researchQuery, setResearchQuery] = useState("");
+  const [researchHandoffId, setResearchHandoffId] = useState<string>("");
+  const [handoffStatus, setHandoffStatus] = useState<string>("");
+
+  const [ingestText, setIngestText] = useState("");
+  const [ingestStatus, setIngestStatus] = useState<string>("");
+
   const [message, setMessage] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,8 +106,27 @@ export default function DuetWorkbench() {
   const [openaiModel, setOpenaiModel] = useState("gpt-5");
   const [anthropicModel, setAnthropicModel] = useState("claude-sonnet-4-5");
 
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [voices, setVoices] = useState<string[]>([]);
+
   const sortedMessages = useMemo(() => [...session.messages], [session.messages]);
   const hasResearchUrl = researchUrl.trim().length > 0;
+
+  const latestUserPrompt = useMemo(() => {
+    if (researchQuery.trim()) {
+      return researchQuery.trim();
+    }
+    if (message.trim()) {
+      return message.trim();
+    }
+    for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
+      const candidate = sortedMessages[index];
+      if (candidate.role === "user" && candidate.content?.trim()) {
+        return candidate.content.trim();
+      }
+    }
+    return "";
+  }, [researchQuery, message, sortedMessages]);
 
   useEffect(() => {
     void (async () => {
@@ -80,10 +136,30 @@ export default function DuetWorkbench() {
           return;
         }
         const payload = (await response.json()) as { profiles?: ProviderProfile[] };
-        const list = payload.profiles || [];
-        setProfiles(list);
+        setProfiles(payload.profiles || []);
       } catch {
-        // local dev can run without profile endpoint during bootstrap
+        // local bootstrap can proceed without profile endpoint
+      }
+    })();
+  }, [apiBase]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [personaResponse, voiceResponse] = await Promise.all([
+          fetch(`${apiBase}/api/personas`),
+          fetch(`${apiBase}/api/voices`),
+        ]);
+        if (personaResponse.ok) {
+          const payload = (await personaResponse.json()) as { personas?: Persona[] };
+          setPersonas(payload.personas || []);
+        }
+        if (voiceResponse.ok) {
+          const payload = (await voiceResponse.json()) as { voices?: string[] };
+          setVoices(payload.voices || []);
+        }
+      } catch {
+        // optional metadata endpoints
       }
     })();
   }, [apiBase]);
@@ -165,6 +241,127 @@ export default function DuetWorkbench() {
     }
   }
 
+  async function createResearchHandoff() {
+    setHandoffStatus("Creating handoff...");
+    try {
+      const response = await fetch(`${apiBase}/api/research/handoff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          mode: researchMode,
+          query: latestUserPrompt,
+          research_url: researchUrl,
+          include_recent_messages: 10,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `Failed to create handoff (${response.status})`);
+      }
+      const payload = (await response.json()) as {
+        handoff?: {
+          handoff_id?: string;
+          query?: string;
+        };
+      };
+      const handoffId = payload.handoff?.handoff_id || "";
+      if (!handoffId) {
+        throw new Error("Missing handoff_id in response");
+      }
+      setResearchHandoffId(handoffId);
+      if (!researchQuery.trim() && payload.handoff?.query) {
+        setResearchQuery(String(payload.handoff.query));
+      }
+      setHandoffStatus(`Handoff ready: ${handoffId}`);
+    } catch (err) {
+      setHandoffStatus(err instanceof Error ? err.message : "Unable to create handoff");
+    }
+  }
+
+  function buildResearchLaunchUrl(mode: ResearchMode): string {
+    if (!hasResearchUrl) {
+      return "";
+    }
+    const base = researchUrl.trim();
+    const modePath = `${base.replace(/\/$/, "")}/research/${mode}`;
+    return safeBuildUrl(modePath, {
+      source: "scribe",
+      session_id: sessionId,
+      scribe_api: apiBase,
+      q: latestUserPrompt,
+      handoff_id: researchHandoffId,
+    });
+  }
+
+  function openResearch(mode: ResearchMode) {
+    const launchUrl = buildResearchLaunchUrl(mode);
+    if (!launchUrl) {
+      return;
+    }
+    window.open(launchUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function ingestResearch() {
+    const trimmed = ingestText.trim();
+    if (!trimmed) {
+      setIngestStatus("Paste a JSON payload or summary text first.");
+      return;
+    }
+
+    setIngestStatus("Ingesting research output...");
+    try {
+      let payload: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        payload = parsed;
+      } catch {
+        payload = { summary: trimmed };
+      }
+
+      const response = await fetch(`${apiBase}/api/research/ingest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          source: "research-app",
+          mode: researchMode,
+          ...payload,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || `Ingest failed (${response.status})`);
+      }
+      const data = (await response.json()) as { session: SessionPayload };
+      setSession(data.session);
+      setIngestStatus("Research result ingested into shared transcript.");
+      setIngestText("");
+    } catch (err) {
+      setIngestStatus(err instanceof Error ? err.message : "Unable to ingest research output");
+    }
+  }
+
+  async function setPersonaVoice(personaId: string, voiceId: string) {
+    try {
+      const response = await fetch(`${apiBase}/api/personas/${personaId}/voice`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voice_id: voiceId }),
+      });
+      if (!response.ok) {
+        return;
+      }
+      const payload = (await response.json()) as { persona?: Persona };
+      if (!payload.persona) {
+        return;
+      }
+      setPersonas((previous) => previous.map((item) => (item.id === personaId ? payload.persona as Persona : item)));
+    } catch {
+      // keep UI responsive even if endpoint unavailable
+    }
+  }
+
   const openaiProfiles = profiles.filter((profile) => profile.provider === "openai");
   const anthropicProfiles = profiles.filter((profile) => profile.provider === "anthropic");
 
@@ -227,7 +424,7 @@ export default function DuetWorkbench() {
               disabled={isRunning}
               className="min-w-28 rounded-xl border border-emerald-300/40 bg-emerald-500/20 px-4 py-2 text-sm font-medium transition hover:bg-emerald-500/35 disabled:opacity-50"
             >
-              {isRunning ? "Running…" : "Run Turn"}
+              {isRunning ? "Running..." : "Run Turn"}
             </button>
           </div>
           {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
@@ -377,7 +574,7 @@ export default function DuetWorkbench() {
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-200">Research Surface</h2>
               <p className="mt-1 text-xs text-white/60">
-                Hidden until needed. Use this to progressively disclose your separate research app.
+                Hidden until needed. Handoff and ingest keep SCRIBE + Research synchronized.
               </p>
             </div>
             <button
@@ -389,7 +586,7 @@ export default function DuetWorkbench() {
           </div>
 
           {showResearch && (
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 space-y-4">
               <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                 <label className="block text-xs uppercase tracking-wider text-white/60">Research App URL</label>
                 <input
@@ -398,13 +595,43 @@ export default function DuetWorkbench() {
                   value={researchUrl}
                   onChange={(event) => setResearchUrl(event.target.value)}
                 />
-                <div className="mt-2 flex flex-wrap gap-2">
+                <label className="mt-3 block text-xs uppercase tracking-wider text-white/60">Research Query</label>
+                <textarea
+                  className="mt-2 h-20 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                  value={researchQuery}
+                  onChange={(event) => setResearchQuery(event.target.value)}
+                  placeholder="Optional. Leave blank to use current/last user prompt."
+                />
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(["hybrid", "novix", "llnl", "google"] as ResearchMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => setResearchMode(mode)}
+                      className={`rounded-full border px-3 py-1 text-xs transition ${
+                        researchMode === mode
+                          ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                          : "border-white/20 text-white/70 hover:border-amber-300/40"
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
+                    onClick={() => void createResearchHandoff()}
+                  >
+                    Create Handoff
+                  </button>
                   <button
                     className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200 disabled:opacity-50"
                     disabled={!hasResearchUrl}
-                    onClick={() => window.open(researchUrl, "_blank", "noopener,noreferrer")}
+                    onClick={() => openResearch(researchMode)}
                   >
-                    Open Research App
+                    Open {researchMode} in Research App
                   </button>
                   <button
                     className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200 disabled:opacity-50"
@@ -414,6 +641,13 @@ export default function DuetWorkbench() {
                     {embedResearch ? "Hide Embed" : "Embed Here"}
                   </button>
                 </div>
+
+                {(handoffStatus || researchHandoffId) && (
+                  <p className="mt-2 text-xs text-white/60">
+                    {handoffStatus}
+                    {researchHandoffId ? ` (id: ${researchHandoffId})` : ""}
+                  </p>
+                )}
                 {!hasResearchUrl && (
                   <p className="mt-2 text-xs text-white/50">
                     Set <span className="font-mono">NEXT_PUBLIC_RESEARCH_APP_URL</span> to keep this connected by default.
@@ -424,8 +658,76 @@ export default function DuetWorkbench() {
               {embedResearch && hasResearchUrl && (
                 <div className="overflow-hidden rounded-xl border border-white/10 bg-black/30">
                   <div className="border-b border-white/10 px-3 py-2 text-xs text-white/60">Embedded research app</div>
-                  <iframe src={researchUrl} title="Research App" className="h-[420px] w-full bg-white" />
+                  <iframe src={buildResearchLaunchUrl(researchMode)} title="Research App" className="h-[420px] w-full bg-white" />
                 </div>
+              )}
+
+              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <label className="block text-xs uppercase tracking-wider text-white/60">Ingest Research Output</label>
+                <textarea
+                  className="mt-2 h-28 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                  value={ingestText}
+                  onChange={(event) => setIngestText(event.target.value)}
+                  placeholder='Paste JSON from research app (e.g. {"title":"...","summary":"...","findings":[...]}) or plain summary text.'
+                />
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
+                    onClick={() => void ingestResearch()}
+                  >
+                    Ingest to SCRIBE
+                  </button>
+                  {ingestStatus && <span className="text-xs text-white/60">{ingestStatus}</span>}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-cyan-200">Personas & Voices</h2>
+              <p className="mt-1 text-xs text-white/60">Verify persona roster and assign voices while you evaluate a new local voice model.</p>
+            </div>
+            <button
+              onClick={() => setShowPersonas((previous) => !previous)}
+              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-cyan-300 hover:text-cyan-200"
+            >
+              {showPersonas ? "Hide Personas" : "Reveal Personas"}
+            </button>
+          </div>
+
+          {showPersonas && (
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {personas.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-white/15 p-3 text-xs text-white/60">
+                  Persona metadata unavailable.
+                </div>
+              ) : (
+                personas.map((persona) => (
+                  <div key={persona.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold text-white/90">{persona.name}</div>
+                        <div className="text-xs uppercase tracking-wide text-white/50">{persona.role}</div>
+                      </div>
+                      <select
+                        value={persona.voice_id || ""}
+                        onChange={(event) => void setPersonaVoice(persona.id, event.target.value)}
+                        className="rounded-md border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-cyan-300"
+                      >
+                        <option value="">(default)</option>
+                        {voices.map((voice) => (
+                          <option key={voice} value={voice}>
+                            {voice}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {persona.description && <p className="mt-2 text-xs text-white/65">{persona.description}</p>}
+                  </div>
+                ))
               )}
             </div>
           )}

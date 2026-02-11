@@ -4,13 +4,26 @@ This module defines persona templates with specific expertise, communication
 styles, and behavioral patterns for salon participants.
 """
 
+import json
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Dict, Optional, Any, List
-from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
 import logging
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_PERSONA_VOICE_OVERRIDES_PATH = Path("data/persona_voice_overrides.json")
+_DEFAULT_VOICE_CATALOG = [
+    "alloy",
+    "echo",
+    "fable",
+    "nova",
+    "onyx",
+    "shimmer",
+]
 
 
 class PersonaRole(str, Enum):
@@ -332,6 +345,56 @@ def create_persona(*args: Any, **kwargs: Any) -> SalonPersona:
     return create_custom_persona(*args, **kwargs)
 
 
+def load_persona_voice_overrides(path: Optional[Path] = None) -> Dict[str, str]:
+    """Load persona voice overrides from disk."""
+
+    effective_path = path or _DEFAULT_PERSONA_VOICE_OVERRIDES_PATH
+    if not effective_path.exists():
+        return {}
+    try:
+        raw = json.loads(effective_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    output: Dict[str, str] = {}
+    for persona_id, voice_id in raw.items():
+        if not isinstance(persona_id, str) or not isinstance(voice_id, str):
+            continue
+        cleaned = voice_id.strip()
+        if cleaned:
+            output[persona_id] = cleaned
+    return output
+
+
+def save_persona_voice_overrides(overrides: Dict[str, str], path: Optional[Path] = None) -> None:
+    """Persist persona voice overrides to disk."""
+
+    effective_path = path or _DEFAULT_PERSONA_VOICE_OVERRIDES_PATH
+    effective_path.parent.mkdir(parents=True, exist_ok=True)
+    cleaned = {key: value.strip() for key, value in overrides.items() if value and value.strip()}
+    effective_path.write_text(json.dumps(cleaned, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def get_personas_with_voice_overrides(path: Optional[Path] = None) -> Dict[str, SalonPersona]:
+    """Return default personas with local voice overrides applied."""
+
+    personas = get_default_personas()
+    overrides = load_persona_voice_overrides(path)
+    for persona_id, override_voice in overrides.items():
+        persona = personas.get(persona_id)
+        if not persona:
+            continue
+        personas[persona_id] = replace(persona, voice_id=override_voice)
+    return personas
+
+
+def list_voice_catalog() -> List[str]:
+    """Return the default voice catalog for persona assignment."""
+
+    return list(_DEFAULT_VOICE_CATALOG)
+
+
 from .salon_manager import SalonTopic  # noqa: E402
 
 __all__ = [
@@ -343,4 +406,8 @@ __all__ = [
     "create_custom_persona",
     "create_persona",
     "create_participant",
+    "load_persona_voice_overrides",
+    "save_persona_voice_overrides",
+    "get_personas_with_voice_overrides",
+    "list_voice_catalog",
 ]

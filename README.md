@@ -48,14 +48,21 @@ Open `http://localhost:3000` for the shared duet surface.
 
 Optional research-app bridge:
 - set `NEXT_PUBLIC_RESEARCH_APP_URL` (for example `http://localhost:3001`) to enable one-click open/embed from the hidden Research panel in SCRIBE.
+- SCRIBE now supports handoff/ingest APIs so research outputs can be pulled back into the shared transcript without manual copy/paste workflows.
 
 ## Core endpoints
 
 - `GET /api/models` model catalog grouped by provider
 - `GET /api/provider-profiles` list redacted provider profiles
 - `PUT /api/provider-profiles/{profile_id}` update profile mode/credentials
+- `GET /api/personas` list personas with effective voice assignments
+- `GET /api/voices` list available voice IDs and current persona assignments
+- `PUT /api/personas/{persona_id}/voice` override persona voice assignment
 - `GET /api/sessions/{session_id}` fetch local shared transcript
 - `GET /api/sessions/{session_id}/events` replay-compatible event stream derived from shared transcript
+- `POST /api/research/handoff` create a portable packet to launch research-app with session context
+- `GET /api/research/handoff/{handoff_id}` fetch a previously created handoff packet
+- `POST /api/research/ingest` append research results into the shared transcript
 - `POST /api/duet/turn` append one user turn and run configured agents sequentially on shared state
 - `WS /ws` legacy UI compatibility (`workspace_info`, `init_agent`, `query`, `edit_query`, `review_result`, `enhance_prompt`, `cancel`) mapped to the same shared duet engine
 
@@ -72,4 +79,6 @@ All Agent-S tooling is exposed under `scribe_agents.agent_s`. The salon runtime 
 
 - Provider profiles are persisted at `data/provider_profiles.json`.
 - Shared transcripts are persisted at `data/shared_sessions/<session_id>.json`.
+- Research handoff payloads are persisted at `data/research_handoffs/<handoff_id>.json`.
+- Persona voice overrides are persisted at `data/persona_voice_overrides.json`.
 - Local `gpt-oss` or other private models can be wired through the `openai_compatible` profile mode.

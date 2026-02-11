@@ -16,7 +16,6 @@ from scribe_agents.salon import (
     SalonState,
     TurnCoordinator,
     TurnStrategy,
-    get_default_personas,
 )
 from scribe_agents.salon.messages import (
     SalonConsensusPayload,
@@ -24,7 +23,11 @@ from scribe_agents.salon.messages import (
     SalonStartPayload,
     SalonStatusPayload,
 )
-from scribe_agents.salon.salon_personas import SalonTopic, create_participant
+from scribe_agents.salon.salon_personas import (
+    SalonTopic,
+    create_participant,
+    get_personas_with_voice_overrides,
+)
 from scribe_core.provider_router import ProviderRouter
 
 logger = logging.getLogger(__name__)
@@ -62,7 +65,7 @@ class SalonWebSocketHandlers:
 
         logger.debug("Starting salon - topic=%s mode=%s", payload.topic, payload.mode)
 
-        personas = get_default_personas()
+        personas = get_personas_with_voice_overrides()
 
         participants = []
         for persona_id in payload.participant_personas or personas.keys():

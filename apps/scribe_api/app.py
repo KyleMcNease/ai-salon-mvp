@@ -13,6 +13,13 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from scribe_agents.salon.salon_personas import (
+    get_default_personas,
+    get_personas_with_voice_overrides,
+    list_voice_catalog,
+    load_persona_voice_overrides,
+    save_persona_voice_overrides,
+)
 from scribe_core.provider_profiles import ProviderProfileUpdate, ProviderProfilesStore
 from scribe_core.provider_router import ProviderRouter
 from scribe_core.shared_state import SharedSessionStore
@@ -29,6 +36,8 @@ app.add_middleware(
 profiles_store = ProviderProfilesStore()
 shared_sessions = SharedSessionStore()
 router = ProviderRouter.lazy_default()
+_RESEARCH_HANDOFF_ROOT = Path("data/research_handoffs")
+_PERSONA_VOICE_OVERRIDES_PATH = Path("data/persona_voice_overrides.json")
 
 _DEFAULT_MODELS = {
     "anthropic": [
@@ -75,6 +84,29 @@ class DuetTurnRequest(BaseModel):
             ),
         ]
     )
+
+
+class PersonaVoiceUpdate(BaseModel):
+    voice_id: Optional[str] = None
+
+
+class ResearchHandoffCreateRequest(BaseModel):
+    session_id: str
+    mode: Optional[str] = "hybrid"
+    query: Optional[str] = None
+    research_url: Optional[str] = None
+    include_recent_messages: int = Field(default=8, ge=0, le=50)
+
+
+class ResearchIngestRequest(BaseModel):
+    session_id: str
+    source: str = "research-app"
+    mode: Optional[str] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    findings: List[str] = Field(default_factory=list)
+    artifacts: List[Dict[str, Any]] = Field(default_factory=list)
+    raw: Optional[Dict[str, Any]] = None
 
 
 def _timestamp() -> str:
@@ -295,6 +327,104 @@ def _session_events(session_id: str) -> List[Dict[str, Any]]:
     return events
 
 
+def _serialize_persona(persona: Any) -> Dict[str, Any]:
+    return {
+        "id": str(getattr(persona, "id", "")),
+        "name": str(getattr(persona, "name", "")),
+        "role": str(getattr(getattr(persona, "role", ""), "value", getattr(persona, "role", ""))),
+        "description": str(getattr(persona, "description", "")),
+        "communication_style": str(getattr(persona, "communication_style", "")),
+        "expertise_areas": list(getattr(persona, "expertise_areas", []) or []),
+        "voice_id": getattr(persona, "voice_id", None),
+        "avatar_color": getattr(persona, "avatar_color", None),
+        "priority": float(getattr(persona, "priority", 1.0)),
+    }
+
+
+def _append_research_message(
+    *,
+    session_id: str,
+    source: str,
+    mode: Optional[str],
+    title: Optional[str],
+    summary: Optional[str],
+    findings: List[str],
+    artifacts: List[Dict[str, Any]],
+    raw: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    state = shared_sessions.load(session_id)
+    history = list(state.get("messages") or [])
+    lines: List[str] = []
+    header = title.strip() if isinstance(title, str) and title.strip() else "Research Handoff"
+    lines.append(f"# {header}")
+    if summary and summary.strip():
+        lines.append(summary.strip())
+    clean_findings = [item.strip() for item in findings if isinstance(item, str) and item.strip()]
+    if clean_findings:
+        lines.append("## Findings")
+        lines.extend([f"- {item}" for item in clean_findings])
+    if artifacts:
+        lines.append("## Artifacts")
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            label = str(artifact.get("label") or artifact.get("name") or "artifact")
+            url = str(artifact.get("url") or "").strip()
+            lines.append(f"- {label}: {url}" if url else f"- {label}")
+
+    message = {
+        "role": "assistant",
+        "speaker": "Research",
+        "provider": "research-app",
+        "model": mode or "external",
+        "content": "\n\n".join(part for part in lines if part),
+        "meta": {
+            "type": "research_ingest",
+            "source": source,
+            "mode": mode,
+            "artifact_count": len(artifacts),
+            "raw": raw or {},
+        },
+        "timestamp": _timestamp(),
+    }
+    history.append(message)
+    saved = shared_sessions.save(session_id, history)
+    return {"session": saved, "message": message}
+
+
+def _handoff_path(handoff_id: str) -> Path:
+    return _RESEARCH_HANDOFF_ROOT / f"{handoff_id}.json"
+
+
+def _create_research_handoff(payload: ResearchHandoffCreateRequest) -> Dict[str, Any]:
+    session = shared_sessions.load(payload.session_id)
+    history = list(session.get("messages") or [])
+    recent = history[-payload.include_recent_messages :] if payload.include_recent_messages else []
+    inferred_query = payload.query or ""
+    if not inferred_query:
+        for item in reversed(history):
+            if str(item.get("role") or "") == "user":
+                inferred_query = str(item.get("content") or "")
+                break
+    handoff_id = str(uuid.uuid4())
+    handoff_payload = {
+        "handoff_id": handoff_id,
+        "session_id": payload.session_id,
+        "mode": payload.mode or "hybrid",
+        "query": inferred_query,
+        "created_at": _timestamp(),
+        "scribe_api_url": "http://localhost:8000",
+        "history": recent,
+        "recommended_agents": [agent.model_dump() for agent in _default_bridge_agents()],
+    }
+    _RESEARCH_HANDOFF_ROOT.mkdir(parents=True, exist_ok=True)
+    _handoff_path(handoff_id).write_text(
+        json.dumps(handoff_payload, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+    return handoff_payload
+
+
 async def _ws_send(websocket: WebSocket, event_type: str, content: Dict[str, Any]) -> None:
     await websocket.send_text(json.dumps({"type": event_type, "content": content}, ensure_ascii=True))
 
@@ -335,6 +465,51 @@ def upsert_provider_profile(profile_id: str, update: ProviderProfileUpdate) -> d
     return {"profile": profile.redacted()}
 
 
+@app.get("/api/personas")
+def list_personas() -> dict[str, Any]:
+    """Return available personas with effective voice assignments."""
+
+    personas = get_personas_with_voice_overrides(path=_PERSONA_VOICE_OVERRIDES_PATH)
+    serialized = [_serialize_persona(persona) for persona in personas.values()]
+    serialized.sort(key=lambda item: item["id"])
+    return {
+        "personas": serialized,
+        "voice_overrides": load_persona_voice_overrides(path=_PERSONA_VOICE_OVERRIDES_PATH),
+    }
+
+
+@app.get("/api/voices")
+def list_voices() -> dict[str, Any]:
+    """Return default voice catalog and persona mappings."""
+
+    personas = get_personas_with_voice_overrides(path=_PERSONA_VOICE_OVERRIDES_PATH)
+    assignments = {persona_id: persona.voice_id for persona_id, persona in personas.items()}
+    return {
+        "voices": list_voice_catalog(),
+        "assignments": assignments,
+    }
+
+
+@app.put("/api/personas/{persona_id}/voice")
+def update_persona_voice(persona_id: str, payload: PersonaVoiceUpdate) -> dict[str, Any]:
+    """Update persisted voice assignment for a persona."""
+
+    defaults = get_default_personas()
+    if persona_id not in defaults:
+        raise HTTPException(status_code=404, detail=f"Unknown persona '{persona_id}'")
+
+    overrides = load_persona_voice_overrides(path=_PERSONA_VOICE_OVERRIDES_PATH)
+    voice_id = (payload.voice_id or "").strip()
+    if voice_id:
+        overrides[persona_id] = voice_id
+    else:
+        overrides.pop(persona_id, None)
+    save_persona_voice_overrides(overrides, path=_PERSONA_VOICE_OVERRIDES_PATH)
+
+    updated = get_personas_with_voice_overrides(path=_PERSONA_VOICE_OVERRIDES_PATH)
+    return {"persona": _serialize_persona(updated[persona_id]), "voice_overrides": overrides}
+
+
 @app.get("/api/sessions/{session_id}")
 def get_shared_session(session_id: str) -> dict[str, Any]:
     """Fetch shared state for a duet session."""
@@ -347,6 +522,50 @@ def get_shared_session_events(session_id: str) -> dict[str, Any]:
     """Build replay events from shared duet state for legacy UI playback."""
 
     return {"events": _session_events(session_id)}
+
+
+@app.post("/api/research/handoff")
+def create_research_handoff(payload: ResearchHandoffCreateRequest) -> dict[str, Any]:
+    """Create a portable research handoff packet from current SCRIBE state."""
+
+    handoff_payload = _create_research_handoff(payload)
+    return {"handoff": handoff_payload}
+
+
+@app.get("/api/research/handoff/{handoff_id}")
+def get_research_handoff(handoff_id: str) -> dict[str, Any]:
+    """Fetch a previously created research handoff payload."""
+
+    path = _handoff_path(handoff_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="handoff not found")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read handoff: {exc}") from exc
+    return {"handoff": payload}
+
+
+@app.post("/api/research/ingest")
+def ingest_research_result(payload: ResearchIngestRequest) -> dict[str, Any]:
+    """Ingest external research output into the shared SCRIBE transcript."""
+
+    has_summary = bool(payload.summary and payload.summary.strip())
+    has_findings = any(isinstance(item, str) and item.strip() for item in payload.findings)
+    has_artifacts = bool(payload.artifacts)
+    if not (has_summary or has_findings or has_artifacts):
+        raise HTTPException(status_code=400, detail="Provide summary, findings, or artifacts")
+
+    return _append_research_message(
+        session_id=payload.session_id,
+        source=payload.source,
+        mode=payload.mode,
+        title=payload.title,
+        summary=payload.summary,
+        findings=payload.findings,
+        artifacts=payload.artifacts,
+        raw=payload.raw,
+    )
 
 
 @app.post("/api/duet/turn")
