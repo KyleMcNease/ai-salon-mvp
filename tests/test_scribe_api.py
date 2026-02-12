@@ -65,6 +65,7 @@ def test_duet_turn_persists_shared_state(api_client: TestClient) -> None:
     assert payload["session"]["messages"][0]["role"] == "user"
     assert payload["session"]["messages"][1]["role"] == "assistant"
     assert payload["session"]["messages"][2]["role"] == "assistant"
+    assert "memory" in payload["session"]
 
 
 def test_session_events_replay_shape(api_client: TestClient) -> None:
@@ -176,3 +177,50 @@ def test_persona_and_voice_endpoints(api_client: TestClient) -> None:
     )
     assert update_response.status_code == 200
     assert update_response.json()["persona"]["voice_id"] == "nova"
+
+
+def test_session_memory_endpoints(api_client: TestClient) -> None:
+    update_response = api_client.put(
+        "/api/sessions/session-memory/memory",
+        json={
+            "summary": "Working on trio orchestration.",
+            "key_facts": ["User wants GPT and Claude to converse directly."],
+            "user_preferences": ["Keep it practical and app-first."],
+            "agent_notes": ["Codex should verify every loop write to shared state."],
+            "merge": False,
+        },
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["memory"]["summary"] == "Working on trio orchestration."
+
+    get_response = api_client.get("/api/sessions/session-memory/memory")
+    assert get_response.status_code == 200
+    memory = get_response.json()["memory"]
+    assert "GPT and Claude" in memory["key_facts"][0]
+
+
+def test_duet_converse_runs_multi_round_agentic_loop(api_client: TestClient) -> None:
+    response = api_client.post(
+        "/api/duet/converse",
+        json={
+            "session_id": "session-loop",
+            "seed_user_message": "Debate two options and converge.",
+            "rounds": 2,
+            "agents": [
+                {"provider": "openai", "model": "gpt-5", "profile_id": "openai:default", "label": "Codex"},
+                {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-5",
+                    "profile_id": "anthropic:default",
+                    "label": "Claude",
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rounds"] == 2
+    assert payload["turns"] == 4
+    assert len(payload["responses"]) == 4
+    assert payload["session"]["messages"][0]["role"] == "user"
+    assert payload["session"]["memory"]["summary"]

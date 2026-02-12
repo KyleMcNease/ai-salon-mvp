@@ -59,11 +59,14 @@ Optional research-app bridge:
 - `GET /api/voices` list available voice IDs and current persona assignments
 - `PUT /api/personas/{persona_id}/voice` override persona voice assignment
 - `GET /api/sessions/{session_id}` fetch local shared transcript
+- `GET /api/sessions/{session_id}/memory` fetch durable shared memory
+- `PUT /api/sessions/{session_id}/memory` upsert durable shared memory
 - `GET /api/sessions/{session_id}/events` replay-compatible event stream derived from shared transcript
 - `POST /api/research/handoff` create a portable packet to launch research-app with session context
 - `GET /api/research/handoff/{handoff_id}` fetch a previously created handoff packet
 - `POST /api/research/ingest` append research results into the shared transcript
 - `POST /api/duet/turn` append one user turn and run configured agents sequentially on shared state
+- `POST /api/duet/converse` run multi-round GPT<->Claude conversation with shared memory
 - `WS /ws` legacy UI compatibility (`workspace_info`, `init_agent`, `query`, `edit_query`, `review_result`, `enhance_prompt`, `cancel`) mapped to the same shared duet engine
 
 ## Voice, Safe Mode, and Salon
@@ -79,6 +82,7 @@ All Agent-S tooling is exposed under `scribe_agents.agent_s`. The salon runtime 
 
 - Provider profiles are persisted at `data/provider_profiles.json`.
 - Shared transcripts are persisted at `data/shared_sessions/<session_id>.json`.
+- Shared memory is persisted alongside each session in `data/shared_sessions/<session_id>.json`.
 - Research handoff payloads are persisted at `data/research_handoffs/<handoff_id>.json`.
 - Persona voice overrides are persisted at `data/persona_voice_overrides.json`.
 - Local `gpt-oss` or other private models can be wired through the `openai_compatible` profile mode.

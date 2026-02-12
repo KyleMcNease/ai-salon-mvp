@@ -15,6 +15,15 @@ type SessionMessage = {
 type SessionPayload = {
   session_id: string;
   messages: SessionMessage[];
+  memory?: SessionMemory;
+  updated_at?: string | null;
+};
+
+type SessionMemory = {
+  summary: string;
+  key_facts: string[];
+  user_preferences: string[];
+  agent_notes: string[];
   updated_at?: string | null;
 };
 
@@ -52,6 +61,35 @@ function randomSessionId(): string {
   return `session-${Date.now()}`;
 }
 
+function emptyMemory(): SessionMemory {
+  return {
+    summary: "",
+    key_facts: [],
+    user_preferences: [],
+    agent_notes: [],
+    updated_at: null,
+  };
+}
+
+function normalizeMemory(memory: unknown): SessionMemory {
+  const fallback = emptyMemory();
+  if (!memory || typeof memory !== "object") {
+    return fallback;
+  }
+  const value = memory as Partial<SessionMemory>;
+  const cleanList = (items: unknown): string[] =>
+    Array.isArray(items)
+      ? items.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+      : [];
+  return {
+    summary: typeof value.summary === "string" ? value.summary : "",
+    key_facts: cleanList(value.key_facts),
+    user_preferences: cleanList(value.user_preferences),
+    agent_notes: cleanList(value.agent_notes),
+    updated_at: typeof value.updated_at === "string" ? value.updated_at : null,
+  };
+}
+
 function safeBuildUrl(base: string, params: Record<string, string>): string {
   try {
     const url = new URL(base);
@@ -78,6 +116,7 @@ export default function DuetWorkbench() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showResearch, setShowResearch] = useState(false);
   const [showPersonas, setShowPersonas] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [embedResearch, setEmbedResearch] = useState(false);
 
   const [sessionId, setSessionId] = useState<string>(() => randomSessionId());
@@ -94,12 +133,19 @@ export default function DuetWorkbench() {
   const [ingestStatus, setIngestStatus] = useState<string>("");
 
   const [message, setMessage] = useState("");
+  const [loopRounds, setLoopRounds] = useState(2);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionPayload>({
     session_id: sessionId,
     messages: [],
   });
+  const [memory, setMemory] = useState<SessionMemory>(emptyMemory());
+  const [memorySummaryInput, setMemorySummaryInput] = useState("");
+  const [memoryFactsInput, setMemoryFactsInput] = useState("");
+  const [memoryPrefsInput, setMemoryPrefsInput] = useState("");
+  const [memoryNotesInput, setMemoryNotesInput] = useState("");
+  const [memoryStatus, setMemoryStatus] = useState("");
   const [profiles, setProfiles] = useState<ProviderProfile[]>([]);
   const [openaiProfile, setOpenaiProfile] = useState("openai:default");
   const [anthropicProfile, setAnthropicProfile] = useState("anthropic:default");
@@ -168,6 +214,28 @@ export default function DuetWorkbench() {
     setSession((previous) => ({ ...previous, session_id: sessionId }));
   }, [sessionId]);
 
+  useEffect(() => {
+    setMemorySummaryInput(memory.summary || "");
+    setMemoryFactsInput(memory.key_facts.join("\n"));
+    setMemoryPrefsInput(memory.user_preferences.join("\n"));
+    setMemoryNotesInput(memory.agent_notes.join("\n"));
+  }, [memory]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch(`${apiBase}/api/sessions/${sessionId}/memory`);
+        if (!response.ok) {
+          return;
+        }
+        const payload = (await response.json()) as { memory?: SessionMemory };
+        setMemory(normalizeMemory(payload.memory));
+      } catch {
+        // memory endpoint is optional during bootstrap
+      }
+    })();
+  }, [apiBase, sessionId]);
+
   async function loadSession(targetSessionId: string) {
     const trimmed = targetSessionId.trim();
     if (!trimmed) {
@@ -181,11 +249,33 @@ export default function DuetWorkbench() {
       }
       const payload = (await response.json()) as SessionPayload;
       setSession(payload);
+      setMemory(normalizeMemory(payload.memory));
       setSessionId(trimmed);
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Unable to load session";
       setError(messageText);
     }
+  }
+
+  function activeAgents() {
+    const activeOpenAIModel = quickMode ? "gpt-5" : openaiModel;
+    const activeAnthropicModel = quickMode ? "claude-sonnet-4-5" : anthropicModel;
+    const activeOpenAIProfile = quickMode ? "openai:default" : openaiProfile;
+    const activeAnthropicProfile = quickMode ? "anthropic:default" : anthropicProfile;
+    return [
+      {
+        provider: "openai",
+        model: activeOpenAIModel,
+        profile_id: activeOpenAIProfile,
+        label: "Codex",
+      },
+      {
+        provider: "anthropic",
+        model: activeAnthropicModel,
+        profile_id: activeAnthropicProfile,
+        label: "Claude",
+      },
+    ];
   }
 
   async function submitTurn() {
@@ -197,11 +287,6 @@ export default function DuetWorkbench() {
     setIsRunning(true);
     setError(null);
 
-    const activeOpenAIModel = quickMode ? "gpt-5" : openaiModel;
-    const activeAnthropicModel = quickMode ? "claude-sonnet-4-5" : anthropicModel;
-    const activeOpenAIProfile = quickMode ? "openai:default" : openaiProfile;
-    const activeAnthropicProfile = quickMode ? "anthropic:default" : anthropicProfile;
-
     try {
       const response = await fetch(`${apiBase}/api/duet/turn`, {
         method: "POST",
@@ -210,20 +295,7 @@ export default function DuetWorkbench() {
           session_id: sessionId,
           user_message: trimmed,
           system_prompt: systemPrompt,
-          agents: [
-            {
-              provider: "openai",
-              model: activeOpenAIModel,
-              profile_id: activeOpenAIProfile,
-              label: "Codex",
-            },
-            {
-              provider: "anthropic",
-              model: activeAnthropicModel,
-              profile_id: activeAnthropicProfile,
-              label: "Claude",
-            },
-          ],
+          agents: activeAgents(),
         }),
       });
       if (!response.ok) {
@@ -232,12 +304,94 @@ export default function DuetWorkbench() {
       }
       const payload = (await response.json()) as { session: SessionPayload };
       setSession(payload.session);
+      setMemory(normalizeMemory(payload.session.memory));
       setMessage("");
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Turn failed";
       setError(messageText);
     } finally {
       setIsRunning(false);
+    }
+  }
+
+  async function runAgenticLoop() {
+    if (isRunning) {
+      return;
+    }
+    setIsRunning(true);
+    setError(null);
+    const seed = message.trim();
+    try {
+      const response = await fetch(`${apiBase}/api/duet/converse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          seed_user_message: seed || undefined,
+          rounds: loopRounds,
+          system_prompt: systemPrompt,
+          agents: activeAgents(),
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `Agentic loop failed (${response.status})`);
+      }
+      const payload = (await response.json()) as { session: SessionPayload };
+      setSession(payload.session);
+      setMemory(normalizeMemory(payload.session.memory));
+      setMessage("");
+    } catch (err) {
+      const messageText = err instanceof Error ? err.message : "Agentic loop failed";
+      setError(messageText);
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  async function refreshMemory() {
+    setMemoryStatus("Refreshing memory...");
+    try {
+      const response = await fetch(`${apiBase}/api/sessions/${sessionId}/memory`);
+      if (!response.ok) {
+        throw new Error(`Unable to load memory (${response.status})`);
+      }
+      const payload = (await response.json()) as { memory?: SessionMemory };
+      setMemory(normalizeMemory(payload.memory));
+      setMemoryStatus("Memory refreshed.");
+    } catch (err) {
+      setMemoryStatus(err instanceof Error ? err.message : "Unable to refresh memory");
+    }
+  }
+
+  async function saveMemory() {
+    setMemoryStatus("Saving memory...");
+    const parseLines = (value: string) =>
+      value
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    try {
+      const response = await fetch(`${apiBase}/api/sessions/${sessionId}/memory`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          summary: memorySummaryInput,
+          key_facts: parseLines(memoryFactsInput),
+          user_preferences: parseLines(memoryPrefsInput),
+          agent_notes: parseLines(memoryNotesInput),
+          merge: false,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `Unable to save memory (${response.status})`);
+      }
+      const payload = (await response.json()) as { memory?: SessionMemory };
+      setMemory(normalizeMemory(payload.memory));
+      setMemoryStatus("Memory saved.");
+    } catch (err) {
+      setMemoryStatus(err instanceof Error ? err.message : "Unable to save memory");
     }
   }
 
@@ -335,6 +489,7 @@ export default function DuetWorkbench() {
       }
       const data = (await response.json()) as { session: SessionPayload };
       setSession(data.session);
+      setMemory(normalizeMemory(data.session.memory));
       setIngestStatus("Research result ingested into shared transcript.");
       setIngestText("");
     } catch (err) {
@@ -427,6 +582,34 @@ export default function DuetWorkbench() {
               {isRunning ? "Running..." : "Run Turn"}
             </button>
           </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <label className="text-xs text-white/60" htmlFor="agentic-rounds">
+              Agentic rounds
+            </label>
+            <input
+              id="agentic-rounds"
+              type="number"
+              min={1}
+              max={12}
+              value={loopRounds}
+              onChange={(event) => {
+                const parsed = Number.parseInt(event.target.value, 10);
+                const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
+                setLoopRounds(clamped);
+              }}
+              className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-emerald-300"
+            />
+            <button
+              onClick={() => void runAgenticLoop()}
+              disabled={isRunning}
+              className="rounded-lg border border-cyan-300/40 bg-cyan-500/15 px-3 py-2 text-xs transition hover:bg-cyan-500/30 disabled:opacity-50"
+            >
+              {isRunning ? "Looping..." : "Run Trio Loop"}
+            </button>
+            <span className="text-xs text-white/50">
+              GPT and Claude alternate, using shared transcript + shared memory each round.
+            </span>
+          </div>
           {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
           <p className="mt-2 text-xs text-white/55">
             Mode: {quickMode ? "Quick (default profiles/models)" : "Workspace (custom lane controls enabled)"}
@@ -460,6 +643,82 @@ export default function DuetWorkbench() {
               ))
             )}
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-emerald-200">Shared Memory</h2>
+              <p className="mt-1 text-xs text-white/60">
+                Durable memory used by both GPT and Claude every turn.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowMemory((previous) => !previous)}
+              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-emerald-300 hover:text-emerald-200"
+            >
+              {showMemory ? "Hide Memory" : "Reveal Memory"}
+            </button>
+          </div>
+
+          {showMemory && (
+            <div className="mt-4 grid gap-3">
+              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <label className="block text-xs uppercase tracking-wider text-white/60">Summary</label>
+                <textarea
+                  className="mt-2 h-16 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-emerald-300"
+                  value={memorySummaryInput}
+                  onChange={(event) => setMemorySummaryInput(event.target.value)}
+                />
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <label className="block text-xs uppercase tracking-wider text-white/60">Key Facts</label>
+                  <textarea
+                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-emerald-300"
+                    value={memoryFactsInput}
+                    onChange={(event) => setMemoryFactsInput(event.target.value)}
+                    placeholder="One fact per line"
+                  />
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <label className="block text-xs uppercase tracking-wider text-white/60">User Preferences</label>
+                  <textarea
+                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-emerald-300"
+                    value={memoryPrefsInput}
+                    onChange={(event) => setMemoryPrefsInput(event.target.value)}
+                    placeholder="One preference per line"
+                  />
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <label className="block text-xs uppercase tracking-wider text-white/60">Agent Notes</label>
+                  <textarea
+                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-emerald-300"
+                    value={memoryNotesInput}
+                    onChange={(event) => setMemoryNotesInput(event.target.value)}
+                    placeholder="One note per line"
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => void saveMemory()}
+                  className="rounded-lg border border-emerald-300/40 px-3 py-2 text-xs transition hover:bg-emerald-500/25"
+                >
+                  Save Memory
+                </button>
+                <button
+                  onClick={() => void refreshMemory()}
+                  className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-emerald-300 hover:text-emerald-200"
+                >
+                  Refresh Memory
+                </button>
+                <span className="text-xs text-white/55">
+                  {memoryStatus || (memory.updated_at ? `Updated ${memory.updated_at}` : "No memory yet")}
+                </span>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl border border-white/10 bg-white/5 p-4">

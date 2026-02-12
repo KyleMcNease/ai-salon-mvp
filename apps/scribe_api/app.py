@@ -86,6 +86,37 @@ class DuetTurnRequest(BaseModel):
     )
 
 
+class DuetConverseRequest(BaseModel):
+    session_id: str
+    seed_user_message: Optional[str] = None
+    system_prompt: Optional[str] = None
+    rounds: int = Field(default=2, ge=1, le=12)
+    agents: List[BridgeAgentRequest] = Field(
+        default_factory=lambda: [
+            BridgeAgentRequest(
+                provider="openai",
+                model="gpt-5",
+                profile_id="openai:default",
+                label="Codex",
+            ),
+            BridgeAgentRequest(
+                provider="anthropic",
+                model="claude-sonnet-4-5",
+                profile_id="anthropic:default",
+                label="Claude",
+            ),
+        ]
+    )
+
+
+class SessionMemoryUpdate(BaseModel):
+    summary: Optional[str] = None
+    key_facts: Optional[List[str]] = None
+    user_preferences: Optional[List[str]] = None
+    agent_notes: Optional[List[str]] = None
+    merge: bool = True
+
+
 class PersonaVoiceUpdate(BaseModel):
     voice_id: Optional[str] = None
 
@@ -200,6 +231,104 @@ def _to_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return llm_messages
 
 
+def _clean_memory_list(raw: Any, *, limit: int = 20) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        cleaned.append(value)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _normalize_session_memory(memory: Any) -> Dict[str, Any]:
+    if not isinstance(memory, dict):
+        memory = {}
+    return {
+        "summary": str(memory.get("summary") or "").strip(),
+        "key_facts": _clean_memory_list(memory.get("key_facts"), limit=25),
+        "user_preferences": _clean_memory_list(memory.get("user_preferences"), limit=25),
+        "agent_notes": _clean_memory_list(memory.get("agent_notes"), limit=25),
+        "updated_at": memory.get("updated_at"),
+    }
+
+
+def _memory_block(memory: Dict[str, Any]) -> str:
+    normalized = _normalize_session_memory(memory)
+    lines: List[str] = []
+    if normalized["summary"]:
+        lines.append(f"Summary: {normalized['summary']}")
+    if normalized["key_facts"]:
+        lines.append("Key facts:")
+        lines.extend([f"- {item}" for item in normalized["key_facts"][:8]])
+    if normalized["user_preferences"]:
+        lines.append("User preferences:")
+        lines.extend([f"- {item}" for item in normalized["user_preferences"][:8]])
+    if normalized["agent_notes"]:
+        lines.append("Agent notes:")
+        lines.extend([f"- {item}" for item in normalized["agent_notes"][:8]])
+    if not lines:
+        return ""
+    return "Shared Memory:\n" + "\n".join(lines)
+
+
+def _compose_system_prompt(system_prompt: Optional[str], memory: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    if system_prompt and system_prompt.strip():
+        parts.append(system_prompt.strip())
+    memory_block = _memory_block(memory)
+    if memory_block:
+        parts.append(memory_block)
+    return "\n\n".join(parts)
+
+
+def _push_memory_note(memory: Dict[str, Any], text: str, *, field_name: str, max_items: int = 20) -> Dict[str, Any]:
+    normalized = _normalize_session_memory(memory)
+    note = text.strip()
+    if not note:
+        return normalized
+    values = list(normalized.get(field_name) or [])
+    if note in values:
+        return normalized
+    values.append(note)
+    normalized[field_name] = values[-max_items:]
+    return normalized
+
+
+def _auto_memory_after_turn(
+    memory: Dict[str, Any],
+    *,
+    user_message: Optional[str],
+    responses: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    updated = _normalize_session_memory(memory)
+    if user_message and user_message.strip():
+        trimmed_user = user_message.strip()
+        updated = _push_memory_note(updated, trimmed_user, field_name="key_facts")
+        updated["summary"] = trimmed_user[:240]
+    for response in responses[-4:]:
+        speaker = str(response.get("speaker") or "assistant")
+        content = str(response.get("content") or "").strip()
+        if not content:
+            continue
+        updated = _push_memory_note(
+            updated,
+            f"{speaker}: {content[:240]}",
+            field_name="agent_notes",
+        )
+    return updated
+
+
 def _run_duet_turn(
     *,
     session_id: str,
@@ -215,6 +344,7 @@ def _run_duet_turn(
 
     state = shared_sessions.load(session_id)
     history = list(state.get("messages") or [])
+    memory = _normalize_session_memory(state.get("memory"))
     history.append(
         {
             "role": "user",
@@ -228,8 +358,12 @@ def _run_duet_turn(
     for agent in agents:
         agent_payload = {
             "messages": _to_llm_messages(history),
-            "system": system_prompt or "",
-            "context": {"session_id": session_id, "agent_label": agent.label or agent.provider},
+            "system": _compose_system_prompt(system_prompt, memory),
+            "context": {
+                "session_id": session_id,
+                "agent_label": agent.label or agent.provider,
+                "shared_memory": memory,
+            },
             "profile_id": agent.profile_id,
             "options": {"temperature": 0.4},
         }
@@ -250,8 +384,82 @@ def _run_duet_turn(
         history.append(response_message)
         responses.append(response_message)
 
-    saved = shared_sessions.save(session_id, history)
+    updated_memory = _auto_memory_after_turn(memory, user_message=trimmed_message, responses=responses)
+    saved = shared_sessions.save(session_id, history, memory=updated_memory)
     return {"session": saved, "responses": responses}
+
+
+def _run_agentic_conversation(
+    *,
+    session_id: str,
+    seed_user_message: Optional[str],
+    system_prompt: Optional[str],
+    agents: List[BridgeAgentRequest],
+    rounds: int,
+) -> Dict[str, Any]:
+    if rounds < 1:
+        raise ValueError("rounds must be >= 1")
+    if not agents:
+        raise ValueError("at least one agent is required")
+
+    state = shared_sessions.load(session_id)
+    history = list(state.get("messages") or [])
+    memory = _normalize_session_memory(state.get("memory"))
+    cleaned_seed = (seed_user_message or "").strip()
+    if cleaned_seed:
+        history.append(
+            {
+                "role": "user",
+                "speaker": "user",
+                "content": cleaned_seed,
+                "timestamp": _timestamp(),
+            }
+        )
+    if not history:
+        raise ValueError("conversation is empty; provide seed_user_message to start")
+
+    responses: List[Dict[str, Any]] = []
+    for round_index in range(rounds):
+        for agent in agents:
+            agent_payload = {
+                "messages": _to_llm_messages(history),
+                "system": _compose_system_prompt(system_prompt, memory),
+                "context": {
+                    "session_id": session_id,
+                    "agent_label": agent.label or agent.provider,
+                    "round": round_index + 1,
+                    "shared_memory": memory,
+                },
+                "profile_id": agent.profile_id,
+                "options": {"temperature": 0.4},
+            }
+            result = router.send_message(agent.provider, agent.model, agent_payload)
+            content = str(result.get("content") or "").strip()
+            if not content:
+                content = "[empty response]"
+            response_message = {
+                "role": "assistant",
+                "speaker": agent.label or f"{agent.provider}:{agent.model}",
+                "provider": agent.provider,
+                "model": agent.model,
+                "content": content,
+                "meta": {
+                    **(result.get("meta") or {}),
+                    "round": round_index + 1,
+                },
+                "timestamp": _timestamp(),
+            }
+            history.append(response_message)
+            responses.append(response_message)
+
+    updated_memory = _auto_memory_after_turn(memory, user_message=cleaned_seed or None, responses=responses)
+    saved = shared_sessions.save(session_id, history, memory=updated_memory)
+    return {
+        "session": saved,
+        "responses": responses,
+        "rounds": rounds,
+        "turns": len(responses),
+    }
 
 
 def _truncate_last_user_turn(session_id: str) -> Dict[str, Any]:
@@ -399,6 +607,7 @@ def _handoff_path(handoff_id: str) -> Path:
 def _create_research_handoff(payload: ResearchHandoffCreateRequest) -> Dict[str, Any]:
     session = shared_sessions.load(payload.session_id)
     history = list(session.get("messages") or [])
+    memory = _normalize_session_memory(session.get("memory"))
     recent = history[-payload.include_recent_messages :] if payload.include_recent_messages else []
     inferred_query = payload.query or ""
     if not inferred_query:
@@ -415,6 +624,7 @@ def _create_research_handoff(payload: ResearchHandoffCreateRequest) -> Dict[str,
         "created_at": _timestamp(),
         "scribe_api_url": "http://localhost:8000",
         "history": recent,
+        "memory": memory,
         "recommended_agents": [agent.model_dump() for agent in _default_bridge_agents()],
     }
     _RESEARCH_HANDOFF_ROOT.mkdir(parents=True, exist_ok=True)
@@ -517,6 +727,35 @@ def get_shared_session(session_id: str) -> dict[str, Any]:
     return shared_sessions.load(session_id)
 
 
+@app.get("/api/sessions/{session_id}/memory")
+def get_session_memory(session_id: str) -> dict[str, Any]:
+    """Fetch durable shared memory for a session."""
+
+    state = shared_sessions.load(session_id)
+    return {
+        "session_id": session_id,
+        "memory": _normalize_session_memory(state.get("memory")),
+    }
+
+
+@app.put("/api/sessions/{session_id}/memory")
+def update_session_memory(session_id: str, payload: SessionMemoryUpdate) -> dict[str, Any]:
+    """Update durable shared memory for a session."""
+
+    updated = shared_sessions.update_memory(
+        session_id,
+        summary=payload.summary,
+        key_facts=payload.key_facts,
+        user_preferences=payload.user_preferences,
+        agent_notes=payload.agent_notes,
+        merge=payload.merge,
+    )
+    return {
+        "session_id": session_id,
+        "memory": _normalize_session_memory(updated.get("memory")),
+    }
+
+
 @app.get("/api/sessions/{session_id}/events")
 def get_shared_session_events(session_id: str) -> dict[str, Any]:
     """Build replay events from shared duet state for legacy UI playback."""
@@ -578,6 +817,22 @@ def duet_turn(payload: DuetTurnRequest) -> dict[str, Any]:
             user_message=payload.user_message,
             system_prompt=payload.system_prompt,
             agents=payload.agents,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/duet/converse")
+def duet_converse(payload: DuetConverseRequest) -> dict[str, Any]:
+    """Run multi-round agent-to-agent conversation on shared state."""
+
+    try:
+        return _run_agentic_conversation(
+            session_id=payload.session_id,
+            seed_user_message=payload.seed_user_message,
+            system_prompt=payload.system_prompt,
+            agents=payload.agents,
+            rounds=payload.rounds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -650,15 +905,65 @@ async def websocket_bridge(websocket: WebSocket) -> None:
                     current_system_prompt = system_prompt
                 raw_agents = content.get("agents")
                 agents = _coerce_agents(raw_agents, current_agents)
+                rounds_value = content.get("agentic_rounds")
+                requested_rounds = 1
+                if isinstance(rounds_value, int):
+                    requested_rounds = max(1, min(12, rounds_value))
 
                 await _ws_send(websocket, "processing", {"message": "Running shared duet turn..."})
                 try:
+                    if requested_rounds > 1:
+                        result = await asyncio.to_thread(
+                            _run_agentic_conversation,
+                            session_id=session_id,
+                            seed_user_message=text,
+                            system_prompt=current_system_prompt,
+                            agents=agents,
+                            rounds=requested_rounds,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            _run_duet_turn,
+                            session_id=session_id,
+                            user_message=text,
+                            system_prompt=current_system_prompt,
+                            agents=agents,
+                        )
+                except Exception as exc:  # pragma: no cover - defensive path
+                    await _ws_send(websocket, "error", {"message": str(exc)})
+                    await _ws_send(websocket, "agent_response", {"text": ""})
+                    continue
+
+                responses = result.get("responses") or []
+                for response in responses:
+                    speaker = str(response.get("speaker") or "assistant")
+                    output = str(response.get("content") or "")
+                    await _ws_send(websocket, "agent_thinking", {"text": f"[{speaker}] {output}"})
+                last_text = str(responses[-1].get("content") or "") if responses else ""
+                await _ws_send(websocket, "agent_response", {"text": last_text})
+                continue
+
+            if message_type == "agentic_loop":
+                text = str(content.get("text") or "").strip()
+                rounds = content.get("rounds")
+                if not isinstance(rounds, int):
+                    rounds = 2
+                rounds = max(1, min(12, rounds))
+                system_prompt = content.get("system_prompt")
+                if isinstance(system_prompt, str):
+                    current_system_prompt = system_prompt
+                raw_agents = content.get("agents")
+                agents = _coerce_agents(raw_agents, current_agents)
+
+                await _ws_send(websocket, "processing", {"message": f"Running agentic loop ({rounds} rounds)..."})
+                try:
                     result = await asyncio.to_thread(
-                        _run_duet_turn,
+                        _run_agentic_conversation,
                         session_id=session_id,
-                        user_message=text,
+                        seed_user_message=text or None,
                         system_prompt=current_system_prompt,
                         agents=agents,
+                        rounds=rounds,
                     )
                 except Exception as exc:  # pragma: no cover - defensive path
                     await _ws_send(websocket, "error", {"message": str(exc)})
