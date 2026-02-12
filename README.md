@@ -50,6 +50,22 @@ Optional research-app bridge:
 - set `NEXT_PUBLIC_RESEARCH_APP_URL` (for example `http://localhost:3001`) to enable one-click open/embed from the hidden Research panel in SCRIBE.
 - SCRIBE now supports handoff/ingest APIs so research outputs can be pulled back into the shared transcript without manual copy/paste workflows.
 
+### Desktop app launcher (macOS)
+
+Create one-click desktop launchers (app icon + command files):
+
+```bash
+./scripts/install-macos-launcher.sh
+```
+
+This creates:
+- `~/Desktop/SCRIBE.app`
+- `~/Desktop/SCRIBE.command`
+- `~/Desktop/SCRIBE Stop.app`
+- `~/Desktop/SCRIBE Stop.command`
+
+When launched, SCRIBE automatically starts backend + frontend, waits for readiness, and opens the app in your browser.
+
 ## Core endpoints
 
 - `GET /api/models` model catalog grouped by provider
