@@ -51,8 +51,8 @@ type BridgeAgent = {
   label: string;
 };
 
-const DEFAULT_OPENAI_MODEL = "gpt5.3-codex";
-const DEFAULT_ANTHROPIC_MODEL = "opus4.6";
+const DEFAULT_OPENAI_MODEL = "gpt-5.2-codex";
+const DEFAULT_ANTHROPIC_MODEL = "opus";
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],

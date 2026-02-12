@@ -19,10 +19,13 @@ class ProviderRouter:
 
     MODEL_ALIASES: Dict[str, Dict[str, str]] = {
         "openai": {
-            "gpt5.3-codex": "gpt-5",
+            "gpt5.3-codex": "gpt-5.2-codex",
+            "gpt-5.3-codex": "gpt-5.2-codex",
+            "gpt5.2-codex": "gpt-5.2-codex",
         },
         "anthropic": {
-            "opus4.6": "claude-opus-4-1-20250805",
+            "opus4.6": "opus",
+            "opus4.5": "opus",
         },
     }
 
@@ -252,7 +255,17 @@ class ProviderRouter:
 
     def _run_codex_cli(self, *, command: str, model: str, prompt: str) -> tuple[str, Dict[str, Any]]:
         process = subprocess.run(
-            [command, "exec", "--skip-git-repo-check", "--json", "-m", model, prompt],
+            [
+                command,
+                "exec",
+                "--skip-git-repo-check",
+                "--json",
+                "-c",
+                'model_reasoning_effort="high"',
+                "-m",
+                model,
+                prompt,
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -294,7 +307,12 @@ class ProviderRouter:
                 raise RuntimeError(errors[-1])
             raise RuntimeError("Codex CLI returned no assistant message")
 
-        return last_text, {"cli_command": command, "thread_id": thread_id, "warnings": errors}
+        return last_text, {
+            "cli_command": command,
+            "thread_id": thread_id,
+            "warnings": errors,
+            "reasoning_effort": "high",
+        }
 
     def _run_claude_cli(self, *, command: str, model: str, prompt: str) -> tuple[str, Dict[str, Any]]:
         process = subprocess.run(

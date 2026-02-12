@@ -75,7 +75,7 @@ class SalonWebSocketHandlers:
                 continue
             participant = create_participant(
                 persona=persona,
-                llm_model="opus4.6",
+                llm_model="opus",
                 temperature=0.7,
                 max_tokens=1000,
                 metadata={"provider": "anthropic"},

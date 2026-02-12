@@ -39,8 +39,8 @@ router = ProviderRouter.lazy_default()
 _RESEARCH_HANDOFF_ROOT = Path("data/research_handoffs")
 _PERSONA_VOICE_OVERRIDES_PATH = Path("data/persona_voice_overrides.json")
 
-DEFAULT_OPENAI_MODEL = "gpt5.3-codex"
-DEFAULT_ANTHROPIC_MODEL = "opus4.6"
+DEFAULT_OPENAI_MODEL = "gpt-5.2-codex"
+DEFAULT_ANTHROPIC_MODEL = "opus"
 
 _DEFAULT_MODELS = {
     "anthropic": [

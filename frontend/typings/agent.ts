@@ -5,8 +5,8 @@ export enum TAB {
 }
 
 export const AVAILABLE_MODELS = [
-  "opus4.6",
-  "gpt5.3-codex",
+  "opus",
+  "gpt-5.2-codex",
   "claude-sonnet-4@20250514",
   "claude-sonnet-4-5",
   "claude-opus-4@20250514",

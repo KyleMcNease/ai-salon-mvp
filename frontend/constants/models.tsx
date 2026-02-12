@@ -4,9 +4,9 @@ import { IModel } from "@/typings/agent";
 export const PROVIDER_MODELS: { [key: string]: IModel[] } = {
   anthropic: [
     {
-      model_name: "opus4.6",
+      model_name: "opus",
       provider: "anthropic",
-      label: "Opus 4.6",
+      label: "Opus (latest)",
     },
     {
       model_name: "claude-sonnet-4-20250514",
@@ -47,9 +47,9 @@ export const PROVIDER_MODELS: { [key: string]: IModel[] } = {
   ],
   openai: [
     {
-      model_name: "gpt5.3-codex",
+      model_name: "gpt-5.2-codex",
       provider: "openai",
-      label: "GPT 5.3 Codex",
+      label: "GPT 5.2 Codex",
     },
     {
       model_name: "gpt-5",
