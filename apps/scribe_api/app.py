@@ -225,8 +225,9 @@ def _to_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         content = str(item.get("content") or "")
         if role not in {"user", "assistant"}:
             role = "user"
-        if role == "assistant":
-            content = f"[{speaker}] {content}"
+        speaker_prefix = f"[{speaker}]"
+        if not content.startswith(speaker_prefix):
+            content = f"{speaker_prefix} {content}" if content else speaker_prefix
         llm_messages.append({"role": role, "content": content})
     return llm_messages
 
