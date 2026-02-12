@@ -38,6 +38,7 @@ shared_sessions = SharedSessionStore()
 router = ProviderRouter.lazy_default()
 _RESEARCH_HANDOFF_ROOT = Path("data/research_handoffs")
 _PERSONA_VOICE_OVERRIDES_PATH = Path("data/persona_voice_overrides.json")
+_MAX_CONTEXT_MESSAGE_CHARS = 4000
 
 DEFAULT_OPENAI_MODEL = "gpt-5.2-codex"
 DEFAULT_ANTHROPIC_MODEL = "opus"
@@ -226,6 +227,11 @@ def _to_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         role = str(item.get("role") or "user")
         speaker = str(item.get("speaker") or role)
         content = str(item.get("content") or "")
+        lowered = content.lower()
+        if ("\"subtype\":\"init\"" in lowered or "\"type\":\"system\"" in lowered) and "mcp" in lowered:
+            content = "[diagnostic output omitted from shared context]"
+        if len(content) > _MAX_CONTEXT_MESSAGE_CHARS:
+            content = f"{content[:_MAX_CONTEXT_MESSAGE_CHARS]}\n...[truncated]..."
         if role not in {"user", "assistant"}:
             role = "user"
         speaker_prefix = f"[{speaker}]"

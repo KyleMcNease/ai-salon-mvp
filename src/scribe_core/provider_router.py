@@ -316,30 +316,60 @@ class ProviderRouter:
 
     def _run_claude_cli(self, *, command: str, model: str, prompt: str) -> tuple[str, Dict[str, Any]]:
         process = subprocess.run(
-            [command, "--print", "--output-format", "json", "--model", model, prompt],
+            [
+                command,
+                "--print",
+                "--output-format",
+                "json",
+                "--strict-mcp-config",
+                "--mcp-config",
+                '{"mcpServers":{}}',
+                "--model",
+                model,
+                prompt,
+            ],
             check=False,
             capture_output=True,
             text=True,
             timeout=300,
         )
-        payload = None
+        payload: Optional[Dict[str, Any]] = None
+
+        def _extract_payload(parsed: Any) -> Optional[Dict[str, Any]]:
+            if isinstance(parsed, dict):
+                if "result" in parsed or "is_error" in parsed:
+                    return parsed
+                return None
+            if isinstance(parsed, list):
+                for item in reversed(parsed):
+                    if isinstance(item, dict) and ("result" in item or "is_error" in item):
+                        return item
+            return None
+
         for line in reversed(process.stdout.splitlines()):
             line = line.strip()
-            if not line or not line.startswith("{"):
+            if not line or line[0] not in "{[":
                 continue
             try:
-                payload = json.loads(line)
-                break
+                parsed = json.loads(line)
+                extracted = _extract_payload(parsed)
+                if extracted:
+                    payload = extracted
+                    break
             except json.JSONDecodeError:
                 continue
 
         stdout_text = process.stdout.strip()
         stderr_text = process.stderr.strip()
 
+        if payload is None and stdout_text:
+            try:
+                parsed = json.loads(stdout_text)
+                payload = _extract_payload(parsed)
+            except json.JSONDecodeError:
+                payload = None
+
         if not isinstance(payload, dict):
-            # Some Claude CLI builds emit plain text with --print; accept that path.
-            if process.returncode == 0 and stdout_text:
-                return stdout_text, {"cli_command": command, "output_format": "text"}
             if stderr_text:
                 raise RuntimeError(stderr_text)
             if stdout_text:
