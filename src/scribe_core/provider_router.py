@@ -17,6 +17,15 @@ from .provider_profiles import AuthMode, ProviderProfile, ProviderProfilesStore
 class ProviderRouter:
     """Route LLM invocations via configured provider profiles."""
 
+    MODEL_ALIASES: Dict[str, Dict[str, str]] = {
+        "openai": {
+            "gpt5.3-codex": "gpt-5",
+        },
+        "anthropic": {
+            "opus4.6": "claude-opus-4-1-20250805",
+        },
+    }
+
     def __init__(
         self,
         config_path: Optional[Path] = None,
@@ -42,13 +51,21 @@ class ProviderRouter:
             )
 
         try:
+            resolved_model = self._resolve_model_alias(provider=provider, model=model)
             if profile.auth_mode == AuthMode.CLI_OAUTH:
-                return self._invoke_cli_oauth(profile, provider=provider, model=model, payload=payload)
-            if profile.auth_mode == AuthMode.API_KEY:
-                return self._invoke_api_key(profile, provider=provider, model=model, payload=payload)
-            if profile.auth_mode == AuthMode.OPENAI_COMPATIBLE:
-                return self._invoke_openai_compatible(profile, provider=provider, model=model, payload=payload)
-            return self._invoke_mock(profile, provider=provider, model=model, payload=payload)
+                result = self._invoke_cli_oauth(profile, provider=provider, model=resolved_model, payload=payload)
+            elif profile.auth_mode == AuthMode.API_KEY:
+                result = self._invoke_api_key(profile, provider=provider, model=resolved_model, payload=payload)
+            elif profile.auth_mode == AuthMode.OPENAI_COMPATIBLE:
+                result = self._invoke_openai_compatible(profile, provider=provider, model=resolved_model, payload=payload)
+            else:
+                result = self._invoke_mock(profile, provider=provider, model=resolved_model, payload=payload)
+            if resolved_model != model:
+                result_meta = result.setdefault("meta", {})
+                if isinstance(result_meta, dict):
+                    result_meta["requested_model"] = model
+                    result_meta["resolved_model"] = resolved_model
+            return result
         except Exception as exc:  # pragma: no cover - defensive fallback
             fallback = self.profiles_store.resolve(provider="mock")
             return self._invoke_mock(
@@ -198,6 +215,11 @@ class ProviderRouter:
         if provider == "anthropic":
             return "claude"
         return ""
+
+    def _resolve_model_alias(self, *, provider: str, model: str) -> str:
+        alias_map = self.MODEL_ALIASES.get(provider, {})
+        normalized_key = model.strip().lower()
+        return alias_map.get(normalized_key, model)
 
     def _normalized_messages(self, payload: Dict[str, Any]) -> List[Dict[str, str]]:
         messages = payload.get("messages") or []
