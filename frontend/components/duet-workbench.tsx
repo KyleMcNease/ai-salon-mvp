@@ -119,7 +119,7 @@ export default function DuetWorkbench() {
   const [showMemory, setShowMemory] = useState(false);
   const [embedResearch, setEmbedResearch] = useState(false);
 
-  const [sessionId, setSessionId] = useState<string>(() => randomSessionId());
+  const [sessionId, setSessionId] = useState<string>("");
   const [systemPrompt, setSystemPrompt] = useState(
     "You are part of a private SCRIBE duet. Keep responses concise, concrete, and build on prior turns."
   );
@@ -211,7 +211,17 @@ export default function DuetWorkbench() {
   }, [apiBase]);
 
   useEffect(() => {
+    if (!sessionId) {
+      return;
+    }
     setSession((previous) => ({ ...previous, session_id: sessionId }));
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (sessionId) {
+      return;
+    }
+    setSessionId(randomSessionId());
   }, [sessionId]);
 
   useEffect(() => {
@@ -222,6 +232,9 @@ export default function DuetWorkbench() {
   }, [memory]);
 
   useEffect(() => {
+    if (!sessionId) {
+      return;
+    }
     void (async () => {
       try {
         const response = await fetch(`${apiBase}/api/sessions/${sessionId}/memory`);
