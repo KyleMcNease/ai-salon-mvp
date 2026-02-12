@@ -43,6 +43,13 @@ type Persona = {
 };
 
 type ResearchMode = "hybrid" | "novix" | "llnl" | "google";
+type RoutingTarget = "duet" | "gpt" | "claude";
+type BridgeAgent = {
+  provider: string;
+  model: string;
+  profile_id: string;
+  label: string;
+};
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
@@ -274,7 +281,7 @@ export default function DuetWorkbench() {
     }
   }
 
-  function activeAgents() {
+  function activeAgents(): BridgeAgent[] {
     const activeOpenAIModel = quickMode ? "gpt-5" : openaiModel;
     const activeAnthropicModel = quickMode ? "claude-sonnet-4-5" : anthropicModel;
     const activeOpenAIProfile = quickMode ? "openai:default" : openaiProfile;
@@ -295,11 +302,49 @@ export default function DuetWorkbench() {
     ];
   }
 
+  function resolveRouting(rawMessage: string, defaultAgents: BridgeAgent[]) {
+    const trimmed = rawMessage.trim();
+    const match = trimmed.match(/^@(gpt|claude|duet|both)\b[:\s-]*/i);
+    if (!match) {
+      return {
+        userMessage: trimmed,
+        agents: defaultAgents,
+        target: "duet" as RoutingTarget,
+      };
+    }
+
+    const targetTag = match[1].toLowerCase();
+    const userMessage = trimmed.replace(/^@(gpt|claude|duet|both)\b[:\s-]*/i, "").trim() || trimmed;
+
+    if (targetTag === "gpt") {
+      return {
+        userMessage,
+        agents: defaultAgents.filter((agent) => agent.provider === "openai"),
+        target: "gpt" as RoutingTarget,
+      };
+    }
+
+    if (targetTag === "claude") {
+      return {
+        userMessage,
+        agents: defaultAgents.filter((agent) => agent.provider === "anthropic"),
+        target: "claude" as RoutingTarget,
+      };
+    }
+
+    return {
+      userMessage,
+      agents: defaultAgents,
+      target: "duet" as RoutingTarget,
+    };
+  }
+
   async function submitTurn() {
     const trimmed = message.trim();
     if (!trimmed || isRunning) {
       return;
     }
+    const routing = resolveRouting(trimmed, activeAgents());
 
     setIsRunning(true);
     setError(null);
@@ -310,9 +355,9 @@ export default function DuetWorkbench() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionId,
-          user_message: trimmed,
+          user_message: routing.userMessage,
           system_prompt: systemPrompt,
-          agents: activeAgents(),
+          agents: routing.agents,
         }),
       });
       if (!response.ok) {
@@ -338,16 +383,17 @@ export default function DuetWorkbench() {
     setIsRunning(true);
     setError(null);
     const seed = message.trim();
+    const routing = resolveRouting(seed, activeAgents());
     try {
       const response = await fetch(`${apiBase}/api/duet/converse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionId,
-          seed_user_message: seed || undefined,
+          seed_user_message: routing.userMessage || undefined,
           rounds: loopRounds,
           system_prompt: systemPrompt,
-          agents: activeAgents(),
+          agents: routing.agents,
         }),
       });
       if (!response.ok) {
@@ -598,7 +644,7 @@ export default function DuetWorkbench() {
               className="h-24 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
               value={message}
               onChange={(event) => setMessage(event.target.value)}
-              placeholder="Ask SCRIBE anything. Your turn is persisted, then Codex + Claude run on the same local shared state."
+              placeholder="Ask SCRIBE anything. Prefix with @gpt or @claude to route a single turn, or leave untagged for duet."
             />
             <button
               onClick={() => void submitTurn()}
@@ -636,6 +682,10 @@ export default function DuetWorkbench() {
               GPT and Claude alternate, using shared transcript + shared memory each round.
             </span>
           </div>
+          <p className="mt-2 text-xs text-white/55">
+            Routing: <span className="font-mono">@gpt</span> for GPT-only, <span className="font-mono">@claude</span>{" "}
+            for Claude-only, or no tag for duet.
+          </p>
           {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
           <p className="mt-2 text-xs text-white/55">
             Mode: {quickMode ? "Quick (default profiles/models)" : "Workspace (custom lane controls enabled)"}
