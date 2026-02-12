@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
+import { Cinzel, IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 
 type SessionMessage = {
   role: "user" | "assistant" | string;
@@ -52,6 +52,10 @@ const plexMono = IBM_Plex_Mono({
   subsets: ["latin"],
   weight: ["400", "500"],
   variable: "--font-duet-mono",
+});
+const cinzel = Cinzel({
+  subsets: ["latin"],
+  weight: ["500", "700"],
 });
 
 function randomSessionId(): string {
@@ -535,17 +539,26 @@ export default function DuetWorkbench() {
 
   return (
     <main
-      className={`${spaceGrotesk.className} ${plexMono.variable} min-h-screen text-white`}
+      className={`${spaceGrotesk.className} ${plexMono.variable} scribe-stage relative min-h-screen overflow-x-hidden text-[#f2eee5]`}
       style={{
         background:
-          "radial-gradient(1000px 480px at -5% 5%, #1f6d64 0%, transparent 60%), radial-gradient(900px 420px at 100% 0%, #8d3f26 0%, transparent 55%), #0f1416",
+          "radial-gradient(900px 420px at -10% -4%, rgba(168, 113, 53, 0.24) 0%, transparent 62%), radial-gradient(1000px 500px at 105% -5%, rgba(48, 68, 78, 0.24) 0%, transparent 58%), #07090c",
       }}
     >
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-8 md:px-6">
-        <header className="rounded-3xl border border-white/15 bg-black/35 p-5 backdrop-blur">
-          <p className="text-xs uppercase tracking-[0.24em] text-emerald-200/80">SCRIBE Closed Loop</p>
-          <h1 className="mt-2 text-3xl font-semibold md:text-4xl">SCRIBE App</h1>
-          <p className="mt-2 max-w-3xl text-sm text-white/75">
+      <div className="pointer-events-none absolute inset-0" aria-hidden>
+        <div className="scribe-grid absolute inset-0" />
+        <div className="scribe-vignette absolute inset-0" />
+        <div className="scribe-orbit scribe-orbit-a absolute left-[8%] top-16 h-64 w-64" />
+        <div className="scribe-orbit scribe-orbit-b absolute right-[6%] top-[28rem] h-48 w-48" />
+      </div>
+
+      <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-8 md:px-6">
+        <header className="scribe-panel scribe-hero rounded-3xl p-5 backdrop-blur md:p-6">
+          <p className="text-xs uppercase tracking-[0.3em] text-[#d7b389]">SCRIBE Closed Loop</p>
+          <h1 className={`${cinzel.className} mt-3 text-4xl font-semibold tracking-[0.08em] text-[#f2e4cf] md:text-5xl`}>
+            SCRIBE
+          </h1>
+          <p className="mt-2 max-w-3xl text-sm text-[#e8dccd]/85">
             Personal-first workspace with progressive disclosure: fast duet by default, deeper controls and research
             surfaces only when you open them.
           </p>
@@ -554,8 +567,8 @@ export default function DuetWorkbench() {
               onClick={() => setQuickMode(true)}
               className={`rounded-full border px-3 py-1 text-xs transition ${
                 quickMode
-                  ? "border-emerald-300/60 bg-emerald-400/20 text-emerald-100"
-                  : "border-white/20 text-white/70 hover:border-emerald-300/40"
+                  ? "border-[#d7a466]/70 bg-[#b68042]/30 text-[#f8eddb]"
+                  : "border-white/20 text-white/70 hover:border-[#d7a466]/45"
               }`}
             >
               Quick Mode
@@ -567,22 +580,22 @@ export default function DuetWorkbench() {
               }}
               className={`rounded-full border px-3 py-1 text-xs transition ${
                 !quickMode
-                  ? "border-sky-300/60 bg-sky-400/20 text-sky-100"
-                  : "border-white/20 text-white/70 hover:border-sky-300/40"
+                  ? "border-[#c2b08f]/70 bg-[#a58b66]/25 text-[#f1e7d8]"
+                  : "border-white/20 text-white/70 hover:border-[#c2b08f]/45"
               }`}
             >
               Workspace Mode
             </button>
-            <span className="rounded-full border border-white/15 px-3 py-1 text-xs text-white/60">
-              Shared Session: <span className="font-mono text-white/80">{sessionId}</span>
+            <span className="rounded-full border border-[#f1d8b3]/25 bg-black/35 px-3 py-1 text-xs text-[#e5d7c3]/80">
+              Shared Session: <span className="font-mono text-[#f5e8d0]">{sessionId}</span>
             </span>
           </div>
         </header>
 
-        <section className="rounded-2xl border border-white/10 bg-black/35 p-4">
+        <section className="scribe-panel rounded-2xl p-4">
           <div className="flex gap-2">
             <textarea
-              className="h-24 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-emerald-400"
+              className="h-24 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
               value={message}
               onChange={(event) => setMessage(event.target.value)}
               placeholder="Ask SCRIBE anything. Your turn is persisted, then Codex + Claude run on the same local shared state."
@@ -590,7 +603,7 @@ export default function DuetWorkbench() {
             <button
               onClick={() => void submitTurn()}
               disabled={isRunning}
-              className="min-w-28 rounded-xl border border-emerald-300/40 bg-emerald-500/20 px-4 py-2 text-sm font-medium transition hover:bg-emerald-500/35 disabled:opacity-50"
+              className="min-w-28 rounded-xl border border-amber-300/40 bg-amber-500/20 px-4 py-2 text-sm font-medium transition hover:bg-amber-500/35 disabled:opacity-50"
             >
               {isRunning ? "Running..." : "Run Turn"}
             </button>
@@ -610,12 +623,12 @@ export default function DuetWorkbench() {
                 const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
                 setLoopRounds(clamped);
               }}
-              className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-emerald-300"
+              className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
             />
             <button
               onClick={() => void runAgenticLoop()}
               disabled={isRunning}
-              className="rounded-lg border border-cyan-300/40 bg-cyan-500/15 px-3 py-2 text-xs transition hover:bg-cyan-500/30 disabled:opacity-50"
+              className="rounded-lg border border-neutral-300/40 bg-neutral-500/15 px-3 py-2 text-xs transition hover:bg-neutral-500/30 disabled:opacity-50"
             >
               {isRunning ? "Looping..." : "Run Trio Loop"}
             </button>
@@ -629,12 +642,12 @@ export default function DuetWorkbench() {
           </p>
         </section>
 
-        <section className="rounded-2xl border border-white/10 bg-black/35 p-4">
+        <section className="scribe-panel rounded-2xl p-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-white/70">Shared Transcript</h2>
             <p className="text-xs text-white/50">{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
           </div>
-          <div className="max-h-[45vh] space-y-3 overflow-y-auto pr-1">
+          <div className="scrollbar-thin max-h-[45vh] space-y-3 overflow-y-auto pr-1">
             {sortedMessages.length === 0 ? (
               <div className="rounded-lg border border-dashed border-white/15 p-4 text-sm text-white/60">
                 Start a turn to populate shared state.
@@ -644,7 +657,7 @@ export default function DuetWorkbench() {
                 <article
                   key={`${item.timestamp || "t"}-${index}`}
                   className={`rounded-lg border p-3 ${
-                    item.role === "user" ? "border-emerald-300/30 bg-emerald-500/10" : "border-white/15 bg-white/5"
+                    item.role === "user" ? "border-amber-300/30 bg-amber-500/10" : "border-white/15 bg-white/5"
                   }`}
                 >
                   <div className="mb-1 flex items-center justify-between text-xs text-white/60">
@@ -658,17 +671,17 @@ export default function DuetWorkbench() {
           </div>
         </section>
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <section className="scribe-panel rounded-2xl p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-emerald-200">Shared Memory</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-200">Shared Memory</h2>
               <p className="mt-1 text-xs text-white/60">
                 Durable memory used by both GPT and Claude every turn.
               </p>
             </div>
             <button
               onClick={() => setShowMemory((previous) => !previous)}
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-emerald-300 hover:text-emerald-200"
+              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
             >
               {showMemory ? "Hide Memory" : "Reveal Memory"}
             </button>
@@ -679,7 +692,7 @@ export default function DuetWorkbench() {
               <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                 <label className="block text-xs uppercase tracking-wider text-white/60">Summary</label>
                 <textarea
-                  className="mt-2 h-16 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-emerald-300"
+                  className="mt-2 h-16 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
                   value={memorySummaryInput}
                   onChange={(event) => setMemorySummaryInput(event.target.value)}
                 />
@@ -688,7 +701,7 @@ export default function DuetWorkbench() {
                 <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                   <label className="block text-xs uppercase tracking-wider text-white/60">Key Facts</label>
                   <textarea
-                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-emerald-300"
+                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
                     value={memoryFactsInput}
                     onChange={(event) => setMemoryFactsInput(event.target.value)}
                     placeholder="One fact per line"
@@ -697,7 +710,7 @@ export default function DuetWorkbench() {
                 <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                   <label className="block text-xs uppercase tracking-wider text-white/60">User Preferences</label>
                   <textarea
-                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-emerald-300"
+                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
                     value={memoryPrefsInput}
                     onChange={(event) => setMemoryPrefsInput(event.target.value)}
                     placeholder="One preference per line"
@@ -706,7 +719,7 @@ export default function DuetWorkbench() {
                 <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                   <label className="block text-xs uppercase tracking-wider text-white/60">Agent Notes</label>
                   <textarea
-                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-emerald-300"
+                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
                     value={memoryNotesInput}
                     onChange={(event) => setMemoryNotesInput(event.target.value)}
                     placeholder="One note per line"
@@ -716,13 +729,13 @@ export default function DuetWorkbench() {
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => void saveMemory()}
-                  className="rounded-lg border border-emerald-300/40 px-3 py-2 text-xs transition hover:bg-emerald-500/25"
+                  className="rounded-lg border border-amber-300/40 px-3 py-2 text-xs transition hover:bg-amber-500/25"
                 >
                   Save Memory
                 </button>
                 <button
                   onClick={() => void refreshMemory()}
-                  className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-emerald-300 hover:text-emerald-200"
+                  className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
                 >
                   Refresh Memory
                 </button>
@@ -734,15 +747,15 @@ export default function DuetWorkbench() {
           )}
         </section>
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <section className="scribe-panel rounded-2xl p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-sky-200">Advanced SCRIBE Controls</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-stone-200">Advanced SCRIBE Controls</h2>
               <p className="mt-1 text-xs text-white/60">Hidden by default for progressive disclosure.</p>
             </div>
             <button
               onClick={() => setShowAdvanced((previous) => !previous)}
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-sky-300 hover:text-sky-200"
+              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-stone-300 hover:text-stone-200"
             >
               {showAdvanced ? "Hide Controls" : "Reveal Controls"}
             </button>
@@ -754,18 +767,18 @@ export default function DuetWorkbench() {
                 <label className="block text-xs uppercase tracking-wider text-white/60">Session ID</label>
                 <div className="mt-2 flex gap-2">
                   <input
-                    className="w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none ring-0 focus:border-sky-400"
+                    className="w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none ring-0 focus:border-stone-400"
                     value={sessionId}
                     onChange={(event) => setSessionId(event.target.value)}
                   />
                   <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-sky-300 hover:text-sky-200"
+                    className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-stone-300 hover:text-stone-200"
                     onClick={() => void loadSession(sessionId)}
                   >
                     Load
                   </button>
                   <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-fuchsia-300 hover:text-fuchsia-200"
+                    className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-orange-300 hover:text-orange-200"
                     onClick={() => setSessionId(randomSessionId())}
                   >
                     New
@@ -776,7 +789,7 @@ export default function DuetWorkbench() {
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <label className="block text-xs uppercase tracking-wider text-white/60">System Prompt</label>
                 <textarea
-                  className="mt-2 h-20 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-sky-400"
+                  className="mt-2 h-20 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
                   value={systemPrompt}
                   onChange={(event) => setSystemPrompt(event.target.value)}
                 />
@@ -784,16 +797,16 @@ export default function DuetWorkbench() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-sky-200">Codex Lane</h3>
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-stone-200">Codex Lane</h3>
                   <div className="mt-3 grid gap-2">
                     <input
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-sky-400"
+                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
                       value={openaiModel}
                       onChange={(event) => setOpenaiModel(event.target.value)}
                       placeholder="gpt-5"
                     />
                     <select
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-sky-400"
+                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
                       value={openaiProfile}
                       onChange={(event) => setOpenaiProfile(event.target.value)}
                     >
@@ -811,16 +824,16 @@ export default function DuetWorkbench() {
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-fuchsia-200">Claude Lane</h3>
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-orange-200">Claude Lane</h3>
                   <div className="mt-3 grid gap-2">
                     <input
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-fuchsia-400"
+                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"
                       value={anthropicModel}
                       onChange={(event) => setAnthropicModel(event.target.value)}
                       placeholder="claude-sonnet-4-5"
                     />
                     <select
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-fuchsia-400"
+                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"
                       value={anthropicProfile}
                       onChange={(event) => setAnthropicProfile(event.target.value)}
                     >
@@ -841,7 +854,7 @@ export default function DuetWorkbench() {
           )}
         </section>
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <section className="scribe-panel rounded-2xl p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-200">Research Surface</h2>
@@ -956,15 +969,15 @@ export default function DuetWorkbench() {
           )}
         </section>
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <section className="scribe-panel rounded-2xl p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-cyan-200">Personas & Voices</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200">Personas & Voices</h2>
               <p className="mt-1 text-xs text-white/60">Verify persona roster and assign voices while you evaluate a new local voice model.</p>
             </div>
             <button
               onClick={() => setShowPersonas((previous) => !previous)}
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-cyan-300 hover:text-cyan-200"
+              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-neutral-300 hover:text-neutral-200"
             >
               {showPersonas ? "Hide Personas" : "Reveal Personas"}
             </button>
@@ -987,7 +1000,7 @@ export default function DuetWorkbench() {
                       <select
                         value={persona.voice_id || ""}
                         onChange={(event) => void setPersonaVoice(persona.id, event.target.value)}
-                        className="rounded-md border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-cyan-300"
+                        className="rounded-md border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-neutral-300"
                       >
                         <option value="">(default)</option>
                         {voices.map((voice) => (

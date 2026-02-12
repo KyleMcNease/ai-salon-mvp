@@ -111,3 +111,141 @@
   --radius-lg: var(--radius-lg);
   --radius-xl: var(--radius-xl);
 }
+
+@keyframes scribe-grid-drift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(22px, 14px, 0);
+  }
+}
+
+@keyframes scribe-orbit-spin {
+  0% {
+    transform: rotate(0deg) scale(1);
+    opacity: 0.32;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.05);
+    opacity: 0.5;
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+    opacity: 0.32;
+  }
+}
+
+@layer components {
+  .scribe-stage {
+    text-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+
+  .scribe-grid {
+    background-image:
+      linear-gradient(to right, rgba(219, 178, 126, 0.08) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(219, 178, 126, 0.08) 1px, transparent 1px);
+    background-size: 92px 92px;
+    mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.7) 20%, transparent 82%);
+    animation: scribe-grid-drift 15s linear infinite;
+  }
+
+  .scribe-vignette {
+    background:
+      radial-gradient(circle at 20% 15%, rgba(205, 145, 83, 0.22), transparent 44%),
+      radial-gradient(circle at 82% 80%, rgba(105, 127, 147, 0.18), transparent 36%),
+      radial-gradient(circle at 50% 52%, transparent 30%, rgba(4, 4, 6, 0.74) 100%);
+  }
+
+  .scribe-orbit {
+    border: 1px solid rgba(215, 164, 102, 0.22);
+    border-radius: 9999px;
+    box-shadow:
+      inset 0 0 0 1px rgba(240, 216, 180, 0.07),
+      0 0 35px rgba(208, 152, 94, 0.17);
+    animation: scribe-orbit-spin 18s linear infinite;
+  }
+
+  .scribe-orbit-a::before,
+  .scribe-orbit-b::before {
+    content: "";
+    position: absolute;
+    inset: 16%;
+    border: 1px solid rgba(215, 164, 102, 0.16);
+    border-radius: 9999px;
+  }
+
+  .scribe-orbit-a {
+    animation-duration: 24s;
+  }
+
+  .scribe-orbit-b {
+    animation-direction: reverse;
+    animation-duration: 30s;
+  }
+
+  .scribe-panel {
+    position: relative;
+    border: 1px solid rgba(238, 213, 177, 0.18);
+    background:
+      linear-gradient(135deg, rgba(255, 242, 224, 0.04) 0%, rgba(255, 242, 224, 0) 44%),
+      rgba(8, 11, 16, 0.72);
+    box-shadow:
+      inset 0 1px 0 rgba(245, 223, 193, 0.08),
+      0 24px 50px rgba(0, 0, 0, 0.45);
+  }
+
+  .scribe-panel::after {
+    content: "";
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 26px;
+    height: 26px;
+    border-top: 1px solid rgba(218, 178, 126, 0.28);
+    border-right: 1px solid rgba(218, 178, 126, 0.28);
+    pointer-events: none;
+  }
+
+  .scribe-hero {
+    background:
+      linear-gradient(135deg, rgba(210, 157, 98, 0.12) 0%, transparent 58%),
+      linear-gradient(225deg, rgba(106, 129, 149, 0.16) 0%, transparent 48%),
+      rgba(6, 8, 11, 0.8);
+  }
+
+  .scribe-stage textarea,
+  .scribe-stage input,
+  .scribe-stage select {
+    border-color: rgba(234, 204, 164, 0.2);
+    background: rgba(4, 5, 8, 0.58);
+    color: #f4ead8;
+  }
+
+  .scribe-stage textarea::placeholder,
+  .scribe-stage input::placeholder {
+    color: rgba(229, 216, 197, 0.5);
+  }
+
+  .scribe-stage textarea:focus,
+  .scribe-stage input:focus,
+  .scribe-stage select:focus {
+    border-color: rgba(228, 176, 112, 0.72);
+  }
+
+  .scribe-stage button {
+    border-color: rgba(232, 203, 166, 0.24);
+    background-color: rgba(21, 17, 12, 0.35);
+    color: rgba(246, 233, 212, 0.92);
+  }
+
+  .scribe-stage button:hover {
+    border-color: rgba(223, 171, 109, 0.6);
+    background-color: rgba(91, 63, 29, 0.38);
+  }
+
+  .scribe-stage button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
