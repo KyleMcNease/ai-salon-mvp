@@ -51,6 +51,9 @@ type BridgeAgent = {
   label: string;
 };
 
+const DEFAULT_OPENAI_MODEL = "gpt5.3-codex";
+const DEFAULT_ANTHROPIC_MODEL = "opus4.6";
+
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-duet",
@@ -132,7 +135,7 @@ export default function DuetWorkbench() {
 
   const [sessionId, setSessionId] = useState<string>("");
   const [systemPrompt, setSystemPrompt] = useState(
-    "You are part of a private SCRIBE duet. Keep responses concise, concrete, and build on prior turns."
+    "You are part of a private SCRIBE duet. Be clear, rigorous, and build on prior turns. Response length should match the user request."
   );
   const [researchUrl, setResearchUrl] = useState(researchAppDefault);
   const [researchMode, setResearchMode] = useState<ResearchMode>("hybrid");
@@ -160,8 +163,8 @@ export default function DuetWorkbench() {
   const [profiles, setProfiles] = useState<ProviderProfile[]>([]);
   const [openaiProfile, setOpenaiProfile] = useState("openai:default");
   const [anthropicProfile, setAnthropicProfile] = useState("anthropic:default");
-  const [openaiModel, setOpenaiModel] = useState("gpt-5");
-  const [anthropicModel, setAnthropicModel] = useState("claude-sonnet-4-5");
+  const [openaiModel, setOpenaiModel] = useState(DEFAULT_OPENAI_MODEL);
+  const [anthropicModel, setAnthropicModel] = useState(DEFAULT_ANTHROPIC_MODEL);
 
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [voices, setVoices] = useState<string[]>([]);
@@ -282,8 +285,8 @@ export default function DuetWorkbench() {
   }
 
   function activeAgents(): BridgeAgent[] {
-    const activeOpenAIModel = quickMode ? "gpt-5" : openaiModel;
-    const activeAnthropicModel = quickMode ? "claude-sonnet-4-5" : anthropicModel;
+    const activeOpenAIModel = quickMode ? DEFAULT_OPENAI_MODEL : openaiModel;
+    const activeAnthropicModel = quickMode ? DEFAULT_ANTHROPIC_MODEL : anthropicModel;
     const activeOpenAIProfile = quickMode ? "openai:default" : openaiProfile;
     const activeAnthropicProfile = quickMode ? "anthropic:default" : anthropicProfile;
     return [
@@ -697,7 +700,7 @@ export default function DuetWorkbench() {
             <h2 className="text-sm font-semibold uppercase tracking-wider text-white/70">Shared Transcript</h2>
             <p className="text-xs text-white/50">{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
           </div>
-          <div className="scrollbar-thin max-h-[45vh] space-y-3 overflow-y-auto pr-1">
+          <div className="scrollbar-thin h-[45vh] space-y-3 overflow-y-auto pr-1">
             {sortedMessages.length === 0 ? (
               <div className="rounded-lg border border-dashed border-white/15 p-4 text-sm text-white/60">
                 Start a turn to populate shared state.
@@ -853,7 +856,7 @@ export default function DuetWorkbench() {
                       className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
                       value={openaiModel}
                       onChange={(event) => setOpenaiModel(event.target.value)}
-                      placeholder="gpt-5"
+                      placeholder={DEFAULT_OPENAI_MODEL}
                     />
                     <select
                       className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
@@ -880,7 +883,7 @@ export default function DuetWorkbench() {
                       className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"
                       value={anthropicModel}
                       onChange={(event) => setAnthropicModel(event.target.value)}
-                      placeholder="claude-sonnet-4-5"
+                      placeholder={DEFAULT_ANTHROPIC_MODEL}
                     />
                     <select
                       className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"

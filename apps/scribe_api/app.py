@@ -39,14 +39,17 @@ router = ProviderRouter.lazy_default()
 _RESEARCH_HANDOFF_ROOT = Path("data/research_handoffs")
 _PERSONA_VOICE_OVERRIDES_PATH = Path("data/persona_voice_overrides.json")
 
+DEFAULT_OPENAI_MODEL = "gpt5.3-codex"
+DEFAULT_ANTHROPIC_MODEL = "opus4.6"
+
 _DEFAULT_MODELS = {
     "anthropic": [
+        DEFAULT_ANTHROPIC_MODEL,
         "claude-opus-4-1-20250805",
-        "claude-sonnet-4-5",
         "claude-3-7-sonnet-20250219",
     ],
     "openai": [
-        "gpt-5",
+        DEFAULT_OPENAI_MODEL,
         "o3",
         "gpt-4.1",
     ],
@@ -72,13 +75,13 @@ class DuetTurnRequest(BaseModel):
         default_factory=lambda: [
             BridgeAgentRequest(
                 provider="openai",
-                model="gpt-5",
+                model=DEFAULT_OPENAI_MODEL,
                 profile_id="openai:default",
                 label="Codex",
             ),
             BridgeAgentRequest(
                 provider="anthropic",
-                model="claude-sonnet-4-5",
+                model=DEFAULT_ANTHROPIC_MODEL,
                 profile_id="anthropic:default",
                 label="Claude",
             ),
@@ -95,13 +98,13 @@ class DuetConverseRequest(BaseModel):
         default_factory=lambda: [
             BridgeAgentRequest(
                 provider="openai",
-                model="gpt-5",
+                model=DEFAULT_OPENAI_MODEL,
                 profile_id="openai:default",
                 label="Codex",
             ),
             BridgeAgentRequest(
                 provider="anthropic",
-                model="claude-sonnet-4-5",
+                model=DEFAULT_ANTHROPIC_MODEL,
                 profile_id="anthropic:default",
                 label="Claude",
             ),
@@ -152,13 +155,13 @@ def _default_bridge_agents() -> List[BridgeAgentRequest]:
     return [
         BridgeAgentRequest(
             provider="openai",
-            model="gpt-5",
+            model=DEFAULT_OPENAI_MODEL,
             profile_id="openai:default",
             label="Codex",
         ),
         BridgeAgentRequest(
             provider="anthropic",
-            model="claude-sonnet-4-5",
+            model=DEFAULT_ANTHROPIC_MODEL,
             profile_id="anthropic:default",
             label="Claude",
         ),
@@ -175,7 +178,7 @@ def _model_hint_to_agents(model_name: Optional[str]) -> List[BridgeAgentRequest]
         token = token.split("/")[-1]
 
     lowered = token.lower()
-    if "claude" in lowered:
+    if any(token_name in lowered for token_name in ("claude", "opus", "sonnet", "haiku")):
         agents[1] = BridgeAgentRequest(
             provider="anthropic",
             model=token,
@@ -648,7 +651,7 @@ def _enhance_prompt_text(source_text: str) -> str:
         "profile_id": "openai:default",
         "options": {"temperature": 0.2},
     }
-    result = router.send_message("openai", "gpt-5", request_payload)
+    result = router.send_message("openai", DEFAULT_OPENAI_MODEL, request_payload)
     output = str(result.get("content") or "").strip()
     return output or source_text
 

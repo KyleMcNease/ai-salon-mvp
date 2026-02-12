@@ -164,17 +164,13 @@ class ProviderRouter:
         payload: Dict[str, Any],
         error: Optional[str] = None,
     ) -> Dict[str, Any]:
-        messages = self._normalized_messages(payload)
-        system_prompt = str(payload.get("system") or "").strip()
-        last_message_content = ""
-        for message in reversed(messages):
-            last_message_content = message.get("content", "").strip()
-            if last_message_content:
-                break
-        body_parts = [part for part in (system_prompt, last_message_content) if part]
-        combined = "\n\n".join(body_parts) if body_parts else ""
-        prefix = f"[provider={provider} model={model}]"
-        response_text = f"{prefix} {combined}".strip() if combined else prefix
+        if error:
+            response_text = (
+                f"[mock-fallback {provider}:{model}] Provider invocation failed: {error}. "
+                f"Verify CLI OAuth/session for {provider}."
+            )
+        else:
+            response_text = f"[mock {provider}:{model}] No live provider response available."
 
         meta: Dict[str, Any] = {
             "auth_mode": profile.auth_mode.value if profile else AuthMode.MOCK.value,
@@ -297,10 +293,17 @@ class ProviderRouter:
             except json.JSONDecodeError:
                 continue
 
+        stdout_text = process.stdout.strip()
+        stderr_text = process.stderr.strip()
+
         if not isinstance(payload, dict):
-            stderr = process.stderr.strip()
-            if stderr:
-                raise RuntimeError(stderr)
+            # Some Claude CLI builds emit plain text with --print; accept that path.
+            if process.returncode == 0 and stdout_text:
+                return stdout_text, {"cli_command": command, "output_format": "text"}
+            if stderr_text:
+                raise RuntimeError(stderr_text)
+            if stdout_text:
+                raise RuntimeError(f"Claude CLI returned unparseable output: {stdout_text[:240]}")
             raise RuntimeError("Claude CLI returned unparseable output")
 
         if payload.get("is_error"):
