@@ -213,7 +213,7 @@ export default function DuetWorkbench() {
 
   const [sessionId, setSessionId] = useState<string>("");
   const [systemPrompt, setSystemPrompt] = useState(
-    "You are part of a private SCRIBE duet. Be clear, rigorous, and build on prior turns. Response length should match the user request."
+    "You are part of a private SCRIBE duet. Be clear, rigorous, and build on prior turns. Response length should match the user request. GPT and Claude can read each other within the same turn, so do not claim you cannot hand off."
   );
   const [researchUrl, setResearchUrl] = useState(researchAppDefault);
   const [researchMode, setResearchMode] = useState<ResearchMode>("hybrid");
@@ -548,8 +548,37 @@ export default function DuetWorkbench() {
     const gptAgent = defaultAgents.find((agent) => agent.provider === "openai");
     const claudeAgent = defaultAgents.find((agent) => agent.provider === "anthropic");
     const trimmed = rawMessage.trim();
+    const buildDelegationPrompt = (requestText: string, from: "gpt" | "claude", to: "gpt" | "claude") =>
+      `[SCRIBE_HANDOFF]
+From: @${from}
+To: @${to}
+Rules:
+1. @${from} asks exactly one concise question to @${to} about the user's request.
+2. @${to} answers that question and then answers the user directly.
+3. Do not say you cannot contact the other model; this is a shared turn.
+[/SCRIBE_HANDOFF]
+
+User request:
+${requestText}`;
     const match = trimmed.match(/^@(gpt|claude|duet|both)\b[:\s-]*/i);
+    const mentionsGpt = /\B@gpt\b/i.test(trimmed);
+    const mentionsClaude = /\B@claude\b/i.test(trimmed);
+
     if (!match) {
+      if (mentionsClaude && !mentionsGpt && gptAgent && claudeAgent) {
+        return {
+          userMessage: buildDelegationPrompt(trimmed, "gpt", "claude"),
+          agents: [gptAgent, claudeAgent],
+          target: "duet" as RoutingTarget,
+        };
+      }
+      if (mentionsGpt && !mentionsClaude && gptAgent && claudeAgent) {
+        return {
+          userMessage: buildDelegationPrompt(trimmed, "claude", "gpt"),
+          agents: [claudeAgent, gptAgent],
+          target: "duet" as RoutingTarget,
+        };
+      }
       return {
         userMessage: trimmed,
         agents: defaultAgents,
@@ -559,19 +588,20 @@ export default function DuetWorkbench() {
 
     const targetTag = match[1].toLowerCase();
     const userMessage = trimmed.replace(/^@(gpt|claude|duet|both)\b[:\s-]*/i, "").trim() || trimmed;
-    const mentionsGpt = /\B@gpt\b/i.test(userMessage);
-    const mentionsClaude = /\B@claude\b/i.test(userMessage);
+    const nestedMentionsGpt = /\B@gpt\b/i.test(userMessage);
+    const nestedMentionsClaude = /\B@claude\b/i.test(userMessage);
 
     if (targetTag === "gpt") {
       const orderedAgents: BridgeAgent[] = [];
       if (gptAgent) {
         orderedAgents.push(gptAgent);
       }
-      if (mentionsClaude && claudeAgent) {
+      if (nestedMentionsClaude && claudeAgent) {
         orderedAgents.push(claudeAgent);
       }
       return {
-        userMessage,
+        userMessage:
+          nestedMentionsClaude ? buildDelegationPrompt(userMessage, "gpt", "claude") : userMessage,
         agents: orderedAgents.length > 0 ? orderedAgents : defaultAgents.filter((agent) => agent.provider === "openai"),
         target: "gpt" as RoutingTarget,
       };
@@ -582,11 +612,12 @@ export default function DuetWorkbench() {
       if (claudeAgent) {
         orderedAgents.push(claudeAgent);
       }
-      if (mentionsGpt && gptAgent) {
+      if (nestedMentionsGpt && gptAgent) {
         orderedAgents.push(gptAgent);
       }
       return {
-        userMessage,
+        userMessage:
+          nestedMentionsGpt ? buildDelegationPrompt(userMessage, "claude", "gpt") : userMessage,
         agents: orderedAgents.length > 0 ? orderedAgents : defaultAgents.filter((agent) => agent.provider === "anthropic"),
         target: "claude" as RoutingTarget,
       };
