@@ -322,6 +322,7 @@ export default function DuetWorkbench() {
     return "";
   }, [researchQuery, message, sortedMessages]);
   const composerRoute = useMemo(() => detectRoutingTarget(message), [message]);
+  const isEmptySession = sortedMessages.length === 0;
 
   useEffect(() => {
     void (async () => {
@@ -1163,6 +1164,155 @@ export default function DuetWorkbench() {
     setSplitCanvasView(true);
   }
 
+  function renderComposer(options?: { centered?: boolean }) {
+    const centered = options?.centered ?? false;
+
+    return (
+      <div
+        className={
+          centered
+            ? "mt-6 rounded-[2rem] border border-white/10 bg-black/38 px-4 py-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
+            : "border-t border-white/10 px-4 py-3 lg:px-6"
+        }
+      >
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <label
+            htmlFor="scribe-attachments"
+            className="cursor-pointer rounded-lg border border-white/20 px-3 py-1.5 text-xs transition hover:border-amber-300 hover:text-amber-200"
+          >
+            Upload Docs
+          </label>
+          <input
+            id="scribe-attachments"
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              const nextFiles = Array.from(event.target.files || []);
+              if (nextFiles.length === 0) {
+                return;
+              }
+              setAttachedFiles((previous) => [...previous, ...nextFiles].slice(0, MAX_ATTACHMENTS));
+              event.currentTarget.value = "";
+            }}
+          />
+          {attachedFiles.map((file, index) => (
+            <span key={`${file.name}-${index}`} className="flex items-center gap-1 rounded-full border border-white/20 px-2 py-1 text-xs text-white/70">
+              {file.name}
+              <button
+                className="text-white/60 hover:text-white"
+                onClick={() => {
+                  setAttachedFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+                }}
+                aria-label={`Remove ${file.name}`}
+              >
+                x
+              </button>
+            </span>
+          ))}
+          {attachStatus && <span className="text-xs text-white/55">{attachStatus}</span>}
+        </div>
+
+        <div className={`flex ${centered ? "flex-col gap-3" : "flex-col gap-2 md:flex-row"}`}>
+          <textarea
+            ref={composerRef}
+            className={`w-full rounded-2xl border border-white/15 px-4 py-3 text-sm outline-none focus:border-amber-400 ${
+              centered ? "h-24 bg-black/52 text-base" : "h-28 bg-black/30"
+            }`}
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                void runAgenticLoop();
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void submitTurn();
+              }
+            }}
+            placeholder="Ask SCRIBE anything. Prefix with @gpt or @claude, or leave untagged for duet."
+          />
+          <div
+            className={`flex gap-2 ${
+              centered ? "justify-end" : "w-full flex-row md:w-44 md:flex-col"
+            }`}
+          >
+            <button
+              onClick={() => void submitTurn()}
+              disabled={isRunning}
+              className={`rounded-xl border border-amber-300/40 bg-amber-500/20 px-4 py-2 text-sm font-medium transition hover:bg-amber-500/35 disabled:opacity-50 ${
+                centered ? "h-10 min-w-[8.5rem]" : "h-11 flex-1"
+              }`}
+            >
+              {isRunning ? "Running..." : "Run Turn"}
+            </button>
+            <button
+              onClick={() => void runAgenticLoop()}
+              disabled={isRunning}
+              className={`rounded-xl border border-neutral-300/40 bg-neutral-500/15 px-4 py-2 text-sm transition hover:bg-neutral-500/30 disabled:opacity-50 ${
+                centered ? "h-10 min-w-[8.5rem]" : "h-11 flex-1"
+              }`}
+            >
+              Run Trio Loop
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-white/55">
+          <span>Route</span>
+          <button
+            onClick={() => setComposerRoute("duet")}
+            className={`rounded-full border px-2 py-1 text-[11px] transition ${
+              composerRoute === "duet"
+                ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                : "border-white/20 text-white/70 hover:border-amber-300/45"
+            }`}
+          >
+            duet
+          </button>
+          <button
+            onClick={() => setComposerRoute("gpt")}
+            className={`rounded-full border px-2 py-1 text-[11px] transition ${
+              composerRoute === "gpt"
+                ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                : "border-white/20 text-white/70 hover:border-amber-300/45"
+            }`}
+          >
+            @gpt
+          </button>
+          <button
+            onClick={() => setComposerRoute("claude")}
+            className={`rounded-full border px-2 py-1 text-[11px] transition ${
+              composerRoute === "claude"
+                ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                : "border-white/20 text-white/70 hover:border-amber-300/45"
+            }`}
+          >
+            @claude
+          </button>
+          <label htmlFor="agentic-rounds">Agentic rounds</label>
+          <input
+            id="agentic-rounds"
+            type="number"
+            min={1}
+            max={12}
+            value={loopRounds}
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
+              setLoopRounds(clamped);
+            }}
+            className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
+          />
+          <span>Enter sends. Shift+Enter newline. Cmd/Ctrl+Enter runs trio loop.</span>
+        </div>
+        {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
+      </div>
+    );
+  }
+
   function handlePaneKeyScroll(event: KeyboardEvent<HTMLDivElement>) {
     const target = event.currentTarget;
     const source = event.target as HTMLElement | null;
@@ -1201,32 +1351,33 @@ export default function DuetWorkbench() {
       className={`${spaceGrotesk.className} ${plexMono.variable} scribe-stage relative h-screen overflow-hidden text-[#f2eee5]`}
       style={{
         background:
-          "radial-gradient(900px 420px at -10% -4%, rgba(168, 113, 53, 0.24) 0%, transparent 62%), radial-gradient(1000px 500px at 105% -5%, rgba(48, 68, 78, 0.24) 0%, transparent 58%), #07090c",
+          "radial-gradient(900px 420px at -10% -4%, rgba(168, 113, 53, 0.15) 0%, transparent 62%), radial-gradient(1000px 500px at 105% -5%, rgba(48, 68, 78, 0.15) 0%, transparent 58%), #0b0d12",
       }}
     >
       <div className="pointer-events-none absolute inset-0" aria-hidden>
         <div className="scribe-grid absolute inset-0" />
         <div className="scribe-vignette absolute inset-0" />
-        <div className="scribe-orbit scribe-orbit-a absolute left-[8%] top-16 h-64 w-64" />
-        <div className="scribe-orbit scribe-orbit-b absolute right-[6%] top-[28rem] h-48 w-48" />
       </div>
 
-      <div className="relative z-10 mx-auto flex h-full w-full max-w-[92rem] min-h-0 flex-col gap-3 px-3 py-3 md:px-6 md:py-4">
-        <header className="scribe-panel scribe-hero rounded-2xl p-3 backdrop-blur md:p-3.5">
-          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+      <div className="relative z-10 mx-auto flex h-full w-full max-w-[92rem] min-h-0 flex-col gap-2 px-2 py-2 md:px-4 md:py-3">
+        <header className="rounded-2xl border border-white/12 bg-black/45 px-4 py-2 backdrop-blur">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-[0.24em] text-[#d7b389]">SCRIBE Closed Loop</p>
-              <h1 className={`${cinzel.className} text-2xl font-semibold tracking-[0.06em] text-[#f2e4cf] md:text-3xl`}>
-                SCRIBE
-              </h1>
-              <p className="max-w-3xl text-xs text-[#e8dccd]/75">
-                @gpt / @claude routing with shared memory and shared transcript.
-              </p>
+              <div className="flex items-center gap-2">
+                <h1 className={`${cinzel.className} text-2xl font-semibold tracking-[0.06em] text-[#f2e4cf]`}>SCRIBE</h1>
+                <span className="rounded-full border border-white/15 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-white/60">
+                  Closed Loop
+                </span>
+              </div>
+              <p className="text-[11px] text-[#e8dccd]/70">One shared thread for you, GPT, and Claude.</p>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs">
+            <div className="justify-self-center rounded-full border border-white/12 bg-black/35 px-3 py-1 text-sm text-white/80">
+              SCRIBE Duet
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-1.5 text-xs">
               <button
                 onClick={() => setQuickMode(true)}
-                className={`rounded-full border px-3 py-1 text-xs transition ${
+                className={`rounded-full border px-2.5 py-1 text-xs transition ${
                   quickMode
                     ? "border-[#d7a466]/70 bg-[#b68042]/30 text-[#f8eddb]"
                     : "border-white/20 text-white/70 hover:border-[#d7a466]/45"
@@ -1239,7 +1390,7 @@ export default function DuetWorkbench() {
                   setQuickMode(false);
                   setSidePanel("advanced");
                 }}
-                className={`rounded-full border px-3 py-1 text-xs transition ${
+                className={`rounded-full border px-2.5 py-1 text-xs transition ${
                   !quickMode
                     ? "border-[#c2b08f]/70 bg-[#a58b66]/25 text-[#f1e7d8]"
                     : "border-white/20 text-white/70 hover:border-[#c2b08f]/45"
@@ -1249,13 +1400,13 @@ export default function DuetWorkbench() {
               </button>
               <button
                 onClick={() => setRailCollapsed((previous) => !previous)}
-                className="rounded-full border px-3 py-1 text-xs transition border-white/20 text-white/75 hover:border-amber-300/45"
+                className="rounded-full border px-2.5 py-1 text-xs transition border-white/20 text-white/75 hover:border-amber-300/45"
               >
                 {railCollapsed ? "Show Rail" : "Hide Rail"}
               </button>
               <button
                 onClick={() => toggleSplitCanvasDock()}
-                className={`rounded-full border px-3 py-1 text-xs transition ${
+                className={`rounded-full border px-2.5 py-1 text-xs transition ${
                   splitCanvasView
                     ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
                     : "border-white/20 text-white/75 hover:border-amber-300/45"
@@ -1263,21 +1414,21 @@ export default function DuetWorkbench() {
               >
                 {splitCanvasView ? "Undock Canvas" : "Split Canvas"}
               </button>
-              <span className="rounded-full border border-[#f1d8b3]/25 bg-black/35 px-3 py-1 text-xs text-[#e5d7c3]/80">
+              <span className="hidden max-w-[15rem] truncate rounded-full border border-[#f1d8b3]/25 bg-black/35 px-2.5 py-1 text-xs text-[#e5d7c3]/80 xl:inline-flex">
                 Session: <span className="font-mono text-[#f5e8d0]">{sessionId}</span>
               </span>
             </div>
           </div>
         </header>
 
-        <section className="scribe-panel flex min-h-0 flex-1 overflow-hidden rounded-3xl p-0">
+        <section className="flex min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/12 bg-black/28">
           <div className="relative flex min-h-0 w-full flex-col lg:flex-row">
             <aside
-              className={`min-h-0 border-b border-white/10 bg-black/25 transition-all duration-200 lg:border-b-0 lg:border-r lg:border-white/10 ${
-                railCollapsed ? "lg:w-[3.75rem]" : "lg:w-[17.5rem]"
+              className={`min-h-0 shrink-0 border-b border-white/10 bg-[#0d1015]/82 transition-all duration-200 lg:flex lg:flex-col lg:border-b-0 lg:border-r lg:border-white/10 ${
+                railCollapsed ? "lg:w-[4.25rem]" : "lg:w-[16rem]"
               }`}
             >
-              <div className="flex items-center justify-between border-b border-white/10 px-3 py-3">
+              <div className="flex items-center justify-between border-b border-white/10 px-3 py-2.5">
                 {!railCollapsed && <h2 className="text-xs uppercase tracking-[0.24em] text-white/65">SCRIBE Rail</h2>}
                 <button
                   onClick={() => setRailCollapsed((previous) => !previous)}
@@ -1288,7 +1439,7 @@ export default function DuetWorkbench() {
               </div>
 
               {!railCollapsed && (
-                <div className="grid gap-2 px-3 py-3">
+                <div className="grid flex-1 content-start gap-2 px-3 py-3">
                   {railPanelButtons.map(([panel, label]) => (
                     <button
                       key={panel}
@@ -1306,7 +1457,7 @@ export default function DuetWorkbench() {
                 </div>
               )}
               {railCollapsed && (
-                <div className="grid gap-2 px-2 py-3">
+                <div className="grid flex-1 content-start gap-2 px-2 py-3">
                   {railPanelButtons.map(([panel, label, icon]) => (
                     <button
                       key={panel}
@@ -1326,7 +1477,7 @@ export default function DuetWorkbench() {
               )}
 
               {!railCollapsed && (
-                <div className="border-t border-white/10 px-3 py-3 text-xs text-white/55">
+                <div className="mt-auto border-t border-white/10 px-3 py-3 text-xs text-white/55">
                   <p>Routing</p>
                   <p className="mt-1 font-mono text-[11px] text-white/75">@gpt / @claude / duet</p>
                 </div>
@@ -1334,236 +1485,120 @@ export default function DuetWorkbench() {
             </aside>
 
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-3 lg:px-6">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
-                  <button
-                    onClick={() => setTranscriptMode("single")}
-                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
-                      transcriptMode === "single"
-                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                        : "border-white/20 text-white/70 hover:border-amber-300/45"
-                    }`}
-                  >
-                    Single Thread
-                  </button>
-                  <button
-                    onClick={() => setTranscriptMode("divergence")}
-                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
-                      transcriptMode === "divergence"
-                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                        : "border-white/20 text-white/70 hover:border-amber-300/45"
-                    }`}
-                  >
-                    Divergence
-                  </button>
-                </div>
-                <div className="text-right text-xs text-white/55">
-                  <p>{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
-                  <p>
-                    Mode: {quickMode ? "Quick" : "Workspace"} · View: {transcriptMode}
-                  </p>
-                </div>
-              </div>
-
-              <div
-                className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6"
-                tabIndex={0}
-                onKeyDown={handlePaneKeyScroll}
-              >
-                {sortedMessages.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-white/15 p-4 text-sm text-white/60">
-                    Start chatting to populate shared state.
-                  </div>
-                ) : transcriptMode === "single" ? (
-                  <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-white/15 bg-black/25">
-                    {sortedMessages.map((item, index) => (
-                      <article
-                        key={`${item.timestamp || "t"}-${index}`}
-                        className={`px-4 py-3 ${
-                          index < sortedMessages.length - 1 ? "border-b border-white/10" : ""
-                        } ${item.role === "user" ? "bg-amber-500/7" : "bg-transparent"}`}
-                      >
-                        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
-                          <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
-                          <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
-                            {messageRouteTag(item)}
-                          </span>
-                          <span className="font-mono">{item.model || item.role}</span>
-                        </div>
-                        <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
-                        {item.role !== "user" && (
-                          <div className="mt-3 flex items-center justify-end">
-                            <button
-                              onClick={() => createArtifactFromMessage(item, index)}
-                              className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
-                            >
-                              Open in Canvas
-                            </button>
-                          </div>
-                        )}
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  sortedMessages.map((item, index) => (
-                    <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
-                      <article
-                        className={`max-w-[94%] rounded-2xl border px-4 py-3 ${
-                          item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
-                        }`}
-                      >
-                        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
-                          <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
-                          <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
-                            {messageRouteTag(item)}
-                          </span>
-                          <span className="font-mono">{item.model || item.role}</span>
-                        </div>
-                        <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
-                        {item.role !== "user" && (
-                          <div className="mt-3 flex items-center justify-end">
-                            <button
-                              onClick={() => createArtifactFromMessage(item, index)}
-                              className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
-                            >
-                              Open in Canvas
-                            </button>
-                          </div>
-                        )}
-                      </article>
-                    </div>
-                  ))
-                )}
-                <div ref={transcriptEndRef} />
-              </div>
-
-              <div className="border-t border-white/10 px-4 py-3 lg:px-6">
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <label
-                    htmlFor="scribe-attachments"
-                    className="cursor-pointer rounded-lg border border-white/20 px-3 py-1.5 text-xs transition hover:border-amber-300 hover:text-amber-200"
-                  >
-                    Upload Docs
-                  </label>
-                  <input
-                    id="scribe-attachments"
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={(event) => {
-                      const nextFiles = Array.from(event.target.files || []);
-                      if (nextFiles.length === 0) {
-                        return;
-                      }
-                      setAttachedFiles((previous) => [...previous, ...nextFiles].slice(0, MAX_ATTACHMENTS));
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                  {attachedFiles.map((file, index) => (
-                    <span key={`${file.name}-${index}`} className="flex items-center gap-1 rounded-full border border-white/20 px-2 py-1 text-xs text-white/70">
-                      {file.name}
-                      <button
-                        className="text-white/60 hover:text-white"
-                        onClick={() => {
-                          setAttachedFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
-                        }}
-                        aria-label={`Remove ${file.name}`}
-                      >
-                        x
-                      </button>
-                    </span>
-                  ))}
-                  {attachStatus && <span className="text-xs text-white/55">{attachStatus}</span>}
-                </div>
-
-                <div className="flex flex-col gap-2 md:flex-row">
-                  <textarea
-                    ref={composerRef}
-                    className="h-28 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
-                    value={message}
-                    onChange={(event) => setMessage(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                        event.preventDefault();
-                        void runAgenticLoop();
-                        return;
-                      }
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        void submitTurn();
-                      }
-                    }}
-                    placeholder="Ask SCRIBE anything. Prefix with @gpt or @claude, or leave untagged for duet."
-                  />
-                  <div className="flex w-full flex-row gap-2 md:w-44 md:flex-col">
+              {!isEmptySession && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-2.5 lg:px-6">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
                     <button
-                      onClick={() => void submitTurn()}
-                      disabled={isRunning}
-                      className="h-11 flex-1 rounded-xl border border-amber-300/40 bg-amber-500/20 px-4 py-2 text-sm font-medium transition hover:bg-amber-500/35 disabled:opacity-50"
+                      onClick={() => setTranscriptMode("single")}
+                      className={`rounded-full border px-2 py-1 text-[11px] transition ${
+                        transcriptMode === "single"
+                          ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                          : "border-white/20 text-white/70 hover:border-amber-300/45"
+                      }`}
                     >
-                      {isRunning ? "Running..." : "Run Turn"}
+                      Single Thread
                     </button>
                     <button
-                      onClick={() => void runAgenticLoop()}
-                      disabled={isRunning}
-                      className="h-11 flex-1 rounded-xl border border-neutral-300/40 bg-neutral-500/15 px-4 py-2 text-sm transition hover:bg-neutral-500/30 disabled:opacity-50"
+                      onClick={() => setTranscriptMode("divergence")}
+                      className={`rounded-full border px-2 py-1 text-[11px] transition ${
+                        transcriptMode === "divergence"
+                          ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                          : "border-white/20 text-white/70 hover:border-amber-300/45"
+                      }`}
                     >
-                      Run Trio Loop
+                      Divergence
                     </button>
                   </div>
+                  <div className="text-right text-xs text-white/55">
+                    <p>{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
+                    <p>
+                      Mode: {quickMode ? "Quick" : "Workspace"} · View: {transcriptMode}
+                    </p>
+                  </div>
                 </div>
+              )}
 
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-white/55">
-                  <span>Route</span>
-                  <button
-                    onClick={() => setComposerRoute("duet")}
-                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
-                      composerRoute === "duet"
-                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                        : "border-white/20 text-white/70 hover:border-amber-300/45"
-                    }`}
-                  >
-                    duet
-                  </button>
-                  <button
-                    onClick={() => setComposerRoute("gpt")}
-                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
-                      composerRoute === "gpt"
-                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                        : "border-white/20 text-white/70 hover:border-amber-300/45"
-                    }`}
-                  >
-                    @gpt
-                  </button>
-                  <button
-                    onClick={() => setComposerRoute("claude")}
-                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
-                      composerRoute === "claude"
-                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                        : "border-white/20 text-white/70 hover:border-amber-300/45"
-                    }`}
-                  >
-                    @claude
-                  </button>
-                  <label htmlFor="agentic-rounds">Agentic rounds</label>
-                  <input
-                    id="agentic-rounds"
-                    type="number"
-                    min={1}
-                    max={12}
-                    value={loopRounds}
-                    onChange={(event) => {
-                      const parsed = Number.parseInt(event.target.value, 10);
-                      const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
-                      setLoopRounds(clamped);
-                    }}
-                    className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
-                  />
-                  <span>Enter sends. Shift+Enter newline. Cmd/Ctrl+Enter runs trio loop.</span>
+              {isEmptySession ? (
+                <div className="flex min-h-0 flex-1 items-center justify-center px-4 py-6 lg:px-10">
+                  <div className="w-full max-w-3xl">
+                    <p className="text-center text-sm text-white/55">GPT + Claude shared state</p>
+                    <h2 className="mt-2 text-center text-4xl font-medium text-white/90 md:text-5xl">What are you working on?</h2>
+                    {renderComposer({ centered: true })}
+                  </div>
                 </div>
-                {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
-              </div>
+              ) : (
+                <>
+                  <div
+                    className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6"
+                    tabIndex={0}
+                    onKeyDown={handlePaneKeyScroll}
+                  >
+                    {transcriptMode === "single" ? (
+                      <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-white/15 bg-black/25">
+                        {sortedMessages.map((item, index) => (
+                          <article
+                            key={`${item.timestamp || "t"}-${index}`}
+                            className={`px-4 py-3 ${
+                              index < sortedMessages.length - 1 ? "border-b border-white/10" : ""
+                            } ${item.role === "user" ? "bg-amber-500/7" : "bg-transparent"}`}
+                          >
+                            <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
+                              <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
+                              <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
+                                {messageRouteTag(item)}
+                              </span>
+                              <span className="font-mono">{item.model || item.role}</span>
+                            </div>
+                            <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
+                            {item.role !== "user" && (
+                              <div className="mt-3 flex items-center justify-end">
+                                <button
+                                  onClick={() => createArtifactFromMessage(item, index)}
+                                  className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                                >
+                                  Open in Canvas
+                                </button>
+                              </div>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      sortedMessages.map((item, index) => (
+                        <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
+                          <article
+                            className={`max-w-[94%] rounded-2xl border px-4 py-3 ${
+                              item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
+                            }`}
+                          >
+                            <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
+                              <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
+                              <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
+                                {messageRouteTag(item)}
+                              </span>
+                              <span className="font-mono">{item.model || item.role}</span>
+                            </div>
+                            <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
+                            {item.role !== "user" && (
+                              <div className="mt-3 flex items-center justify-end">
+                                <button
+                                  onClick={() => createArtifactFromMessage(item, index)}
+                                  className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                                >
+                                  Open in Canvas
+                                </button>
+                              </div>
+                            )}
+                          </article>
+                        </div>
+                      ))
+                    )}
+                    <div ref={transcriptEndRef} />
+                  </div>
+                  {renderComposer()}
+                </>
+              )}
             </div>
 
             {(showSplitRightPanel || showOverlayRightPanel) && (

@@ -144,11 +144,11 @@
 
   .scribe-grid {
     background-image:
-      linear-gradient(to right, rgba(219, 178, 126, 0.08) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(219, 178, 126, 0.08) 1px, transparent 1px);
-    background-size: 92px 92px;
-    mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.7) 20%, transparent 82%);
-    animation: scribe-grid-drift 15s linear infinite;
+      linear-gradient(to right, rgba(219, 178, 126, 0.04) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(219, 178, 126, 0.04) 1px, transparent 1px);
+    background-size: 108px 108px;
+    mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.55) 20%, transparent 82%);
+    animation: scribe-grid-drift 24s linear infinite;
   }
 
   .scribe-vignette {
