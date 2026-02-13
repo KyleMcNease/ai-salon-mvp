@@ -242,6 +242,11 @@ export default function DuetWorkbench() {
   const [selectedCanvasVersionId, setSelectedCanvasVersionId] = useState("");
   const [showCanvasDiff, setShowCanvasDiff] = useState(false);
   const [canvasStatus, setCanvasStatus] = useState("");
+  const [canvasSearch, setCanvasSearch] = useState("");
+  const [pinnedArtifactIds, setPinnedArtifactIds] = useState<string[]>([]);
+  const [showPinnedOnly, setShowPinnedOnly] = useState(false);
+  const [splitCanvasView, setSplitCanvasView] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   const sortedMessages = useMemo(() => [...session.messages], [session.messages]);
@@ -262,6 +267,31 @@ export default function DuetWorkbench() {
     }
     return buildLineDiff(selectedCanvasVersion.content, canvasDraftContent);
   }, [selectedCanvasVersion, canvasDraftContent]);
+  const visibleArtifacts = useMemo(() => {
+    const query = canvasSearch.trim().toLowerCase();
+    return [...artifacts]
+      .filter((item) => {
+        if (showPinnedOnly && !pinnedArtifactIds.includes(item.id)) {
+          return false;
+        }
+        if (!query) {
+          return true;
+        }
+        return (
+          item.title.toLowerCase().includes(query) ||
+          item.content.toLowerCase().includes(query) ||
+          item.sourceSpeaker.toLowerCase().includes(query)
+        );
+      })
+      .sort((a, b) => {
+        const aPinned = pinnedArtifactIds.includes(a.id) ? 1 : 0;
+        const bPinned = pinnedArtifactIds.includes(b.id) ? 1 : 0;
+        if (aPinned !== bPinned) {
+          return bPinned - aPinned;
+        }
+        return b.updatedAt.localeCompare(a.updatedAt);
+      });
+  }, [artifacts, canvasSearch, showPinnedOnly, pinnedArtifactIds]);
 
   const latestUserPrompt = useMemo(() => {
     if (researchQuery.trim()) {
@@ -763,8 +793,12 @@ export default function DuetWorkbench() {
     research: "Research Surface",
     personas: "Personas & Voices",
   };
+  const activeRightPanel: SidePanel = splitCanvasView ? "canvas" : sidePanel;
 
   function togglePanel(panel: Exclude<SidePanel, "none">) {
+    if (panel !== "canvas") {
+      setSplitCanvasView(false);
+    }
     setSidePanel((previous) => (previous === panel ? "none" : panel));
   }
 
@@ -908,12 +942,14 @@ export default function DuetWorkbench() {
     if (!activeArtifact) {
       return;
     }
+    setPinnedArtifactIds((previous) => previous.filter((id) => id !== activeArtifact.id));
     setArtifacts((previous) => {
       const remaining = previous.filter((item) => item.id !== activeArtifact.id);
       if (remaining.length > 0) {
         setActiveArtifactId(remaining[0].id);
       } else {
         setActiveArtifactId("");
+        setSplitCanvasView(false);
       }
       return remaining;
     });
@@ -961,6 +997,39 @@ export default function DuetWorkbench() {
     } catch {
       setCanvasStatus("Unable to copy. Check browser permissions.");
     }
+  }
+
+  function toggleArtifactPin(artifactId: string) {
+    setPinnedArtifactIds((previous) =>
+      previous.includes(artifactId) ? previous.filter((id) => id !== artifactId) : [artifactId, ...previous]
+    );
+  }
+
+  function injectCanvasIntoComposer(target: RoutingTarget) {
+    if (!activeArtifact) {
+      return;
+    }
+    const prefix = target === "duet" ? "" : `@${target} `;
+    const title = canvasDraftTitle.trim() || activeArtifact.title || "Untitled artifact";
+    const body = canvasDraftContent.trim() || activeArtifact.content || "";
+    const injected = `${prefix}Use this canvas artifact as context.\n\n[CANVAS]\nTitle: ${title}\nSource: ${activeArtifact.sourceSpeaker}${activeArtifact.sourceModel ? ` (${activeArtifact.sourceModel})` : ""}\n\n${body}`;
+    setMessage((previous) => (previous.trim() ? `${previous.trim()}\n\n${injected}` : injected));
+    setCanvasStatus(`Injected into composer for ${target === "duet" ? "duet" : `@${target}`}.`);
+    setSidePanel("none");
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  function toggleSplitCanvasDock() {
+    if (splitCanvasView) {
+      setSplitCanvasView(false);
+      return;
+    }
+    if (!activeArtifact) {
+      createBlankArtifact();
+    } else {
+      setSidePanel("canvas");
+    }
+    setSplitCanvasView(true);
   }
 
   return (
@@ -1012,6 +1081,22 @@ export default function DuetWorkbench() {
             >
               Workspace Mode
             </button>
+            <button
+              onClick={() => setRailCollapsed((previous) => !previous)}
+              className="rounded-full border px-3 py-1 text-xs transition border-white/20 text-white/75 hover:border-amber-300/45"
+            >
+              {railCollapsed ? "Show Sidebar" : "Hide Sidebar"}
+            </button>
+            <button
+              onClick={() => toggleSplitCanvasDock()}
+              className={`rounded-full border px-3 py-1 text-xs transition ${
+                splitCanvasView
+                  ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                  : "border-white/20 text-white/75 hover:border-amber-300/45"
+              }`}
+            >
+              {splitCanvasView ? "Undock Canvas" : "Split Canvas"}
+            </button>
             <span className="rounded-full border border-[#f1d8b3]/25 bg-black/35 px-3 py-1 text-xs text-[#e5d7c3]/80">
               Shared Session: <span className="font-mono text-[#f5e8d0]">{sessionId}</span>
             </span>
@@ -1025,7 +1110,7 @@ export default function DuetWorkbench() {
           <div className="flex min-h-[74vh] flex-col lg:flex-row">
             <aside
               className={`border-b border-white/10 bg-black/25 transition-all duration-200 lg:border-b-0 lg:border-r lg:border-white/10 ${
-                railCollapsed ? "lg:w-[5rem]" : "lg:w-[17.5rem]"
+                railCollapsed ? "lg:w-[3.75rem]" : "lg:w-[17.5rem]"
               }`}
             >
               <div className="flex items-center justify-between border-b border-white/10 px-3 py-3">
@@ -1038,28 +1123,30 @@ export default function DuetWorkbench() {
                 </button>
               </div>
 
-              <div className="grid gap-2 px-3 py-3">
-                {([
-                  ["canvas", "Canvas"],
-                  ["memory", "Memory"],
-                  ["advanced", "Advanced"],
-                  ["research", "Research"],
-                  ["personas", "Personas"],
-                ] as Array<[Exclude<SidePanel, "none">, string]>).map(([panel, label]) => (
-                  <button
-                    key={panel}
-                    onClick={() => togglePanel(panel)}
-                    className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
-                      sidePanel === panel
-                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                        : "border-white/15 text-white/75 hover:border-amber-300/40 hover:text-amber-100"
-                    }`}
-                    title={label}
-                  >
-                    {railCollapsed ? label.slice(0, 1) : label}
-                  </button>
-                ))}
-              </div>
+              {!railCollapsed && (
+                <div className="grid gap-2 px-3 py-3">
+                  {([
+                    ["canvas", "Canvas"],
+                    ["memory", "Memory"],
+                    ["advanced", "Advanced"],
+                    ["research", "Research"],
+                    ["personas", "Personas"],
+                  ] as Array<[Exclude<SidePanel, "none">, string]>).map(([panel, label]) => (
+                    <button
+                      key={panel}
+                      onClick={() => togglePanel(panel)}
+                      className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                        sidePanel === panel
+                          ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                          : "border-white/15 text-white/75 hover:border-amber-300/40 hover:text-amber-100"
+                      }`}
+                      title={label}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {!railCollapsed && (
                 <div className="border-t border-white/10 px-3 py-3 text-xs text-white/55">
@@ -1157,6 +1244,7 @@ export default function DuetWorkbench() {
 
                 <div className="flex flex-col gap-2 md:flex-row">
                   <textarea
+                    ref={composerRef}
                     className="h-28 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
@@ -1207,20 +1295,28 @@ export default function DuetWorkbench() {
               </div>
             </div>
 
-            {sidePanel !== "none" && (
+            {activeRightPanel !== "none" && (
               <aside className="border-t border-white/10 bg-black/20 lg:w-[26rem] lg:border-l lg:border-t-0 lg:border-white/10">
                 <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-white/75">{sidePanelTitles[sidePanel]}</h3>
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-white/75">
+                    {sidePanelTitles[activeRightPanel as Exclude<SidePanel, "none">]}
+                  </h3>
                   <button
-                    onClick={() => setSidePanel("none")}
+                    onClick={() => {
+                      if (splitCanvasView) {
+                        setSplitCanvasView(false);
+                      } else {
+                        setSidePanel("none");
+                      }
+                    }}
                     className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-200"
                   >
-                    Close
+                    {splitCanvasView ? "Undock" : "Close"}
                   </button>
                 </div>
 
                 <div className="scrollbar-thin scribe-stable-scroll h-[58vh] overflow-y-scroll px-4 py-4 lg:h-[74vh]">
-                  {sidePanel === "canvas" && (
+                  {activeRightPanel === "canvas" && (
                     <div className="grid gap-3">
                       <div className="flex flex-wrap gap-2">
                         <button
@@ -1271,6 +1367,57 @@ export default function DuetWorkbench() {
                         >
                           Delete
                         </button>
+                        <button
+                          onClick={() => toggleSplitCanvasDock()}
+                          className={`rounded-lg border px-3 py-2 text-xs transition ${
+                            splitCanvasView
+                              ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                              : "border-white/20 text-white/75 hover:border-amber-300/45"
+                          }`}
+                        >
+                          {splitCanvasView ? "Undock Split" : "Dock Split"}
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => injectCanvasIntoComposer("gpt")}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Inject @gpt
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => injectCanvasIntoComposer("claude")}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Inject @claude
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => injectCanvasIntoComposer("duet")}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Inject Duet
+                        </button>
+                      </div>
+
+                      <div className="grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3">
+                        <input
+                          value={canvasSearch}
+                          onChange={(event) => setCanvasSearch(event.target.value)}
+                          placeholder="Search artifacts"
+                          className="w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
+                        />
+                        <label className="flex items-center gap-2 text-xs text-white/70">
+                          <input
+                            type="checkbox"
+                            checked={showPinnedOnly}
+                            onChange={(event) => setShowPinnedOnly(event.target.checked)}
+                          />
+                          Show pinned only
+                        </label>
                       </div>
 
                       {canvasStatus && <p className="text-xs text-white/60">{canvasStatus}</p>}
@@ -1281,25 +1428,47 @@ export default function DuetWorkbench() {
                         </div>
                       )}
 
-                      {artifacts.length > 0 && (
+                      {artifacts.length > 0 && visibleArtifacts.length === 0 && (
+                        <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs text-white/60">
+                          No artifacts match your filter.
+                        </div>
+                      )}
+
+                      {visibleArtifacts.length > 0 && (
                         <>
                           <div className="grid gap-2">
-                            {artifacts.map((artifact) => (
-                              <button
-                                key={artifact.id}
-                                onClick={() => setActiveArtifactId(artifact.id)}
-                                className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
-                                  activeArtifactId === artifact.id
-                                    ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                                    : "border-white/15 text-white/75 hover:border-amber-300/45"
-                                }`}
-                              >
-                                <div className="font-medium">{artifact.title || "Untitled artifact"}</div>
-                                <div className="mt-1 text-[11px] text-white/55">
-                                  {artifact.sourceSpeaker} {artifact.sourceModel ? `· ${artifact.sourceModel}` : ""}
+                            {visibleArtifacts.map((artifact) => {
+                              const pinned = pinnedArtifactIds.includes(artifact.id);
+                              return (
+                                <div
+                                  key={artifact.id}
+                                  className={`rounded-lg border px-3 py-2 text-xs transition ${
+                                    activeArtifactId === artifact.id
+                                      ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                                      : "border-white/15 text-white/75 hover:border-amber-300/45"
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <button className="min-w-0 text-left" onClick={() => setActiveArtifactId(artifact.id)}>
+                                      <div className="truncate font-medium">{artifact.title || "Untitled artifact"}</div>
+                                      <div className="mt-1 truncate text-[11px] text-white/55">
+                                        {artifact.sourceSpeaker} {artifact.sourceModel ? `· ${artifact.sourceModel}` : ""}
+                                      </div>
+                                    </button>
+                                    <button
+                                      onClick={() => toggleArtifactPin(artifact.id)}
+                                      className={`rounded-md border px-2 py-0.5 text-[11px] transition ${
+                                        pinned
+                                          ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                                          : "border-white/20 text-white/70 hover:border-amber-300/45"
+                                      }`}
+                                    >
+                                      {pinned ? "Pinned" : "Pin"}
+                                    </button>
+                                  </div>
                                 </div>
-                              </button>
-                            ))}
+                              );
+                            })}
                           </div>
 
                           {activeArtifact && (
@@ -1391,7 +1560,7 @@ export default function DuetWorkbench() {
                     </div>
                   )}
 
-                  {sidePanel === "memory" && (
+                  {activeRightPanel === "memory" && (
                     <div className="grid gap-3">
                       <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                         <label className="block text-xs uppercase tracking-wider text-white/60">Summary</label>
@@ -1450,7 +1619,7 @@ export default function DuetWorkbench() {
                     </div>
                   )}
 
-                  {sidePanel === "advanced" && (
+                  {activeRightPanel === "advanced" && (
                     <div className="grid gap-4">
                       <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                         <label className="block text-xs uppercase tracking-wider text-white/60">Session ID</label>
@@ -1542,7 +1711,7 @@ export default function DuetWorkbench() {
                     </div>
                   )}
 
-                  {sidePanel === "research" && (
+                  {activeRightPanel === "research" && (
                     <div className="space-y-4">
                       <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                         <label className="block text-xs uppercase tracking-wider text-white/60">Research App URL</label>
@@ -1640,7 +1809,7 @@ export default function DuetWorkbench() {
                     </div>
                   )}
 
-                  {sidePanel === "personas" && (
+                  {activeRightPanel === "personas" && (
                     <div className="grid gap-3">
                       {personas.length === 0 ? (
                         <div className="rounded-lg border border-dashed border-white/15 p-3 text-xs text-white/60">
