@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Cinzel, IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 
 type SessionMessage = {
@@ -53,6 +53,9 @@ type BridgeAgent = {
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.2-codex";
 const DEFAULT_ANTHROPIC_MODEL = "opus";
+const MAX_ATTACHMENTS = 6;
+const MAX_ATTACHMENT_SIZE_BYTES = 2 * 1024 * 1024;
+const MAX_ATTACHMENT_TEXT_CHARS = 12_000;
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
@@ -147,6 +150,8 @@ export default function DuetWorkbench() {
   const [ingestStatus, setIngestStatus] = useState<string>("");
 
   const [message, setMessage] = useState("");
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [attachStatus, setAttachStatus] = useState("");
   const [loopRounds, setLoopRounds] = useState(2);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,6 +173,7 @@ export default function DuetWorkbench() {
 
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [voices, setVoices] = useState<string[]>([]);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   const sortedMessages = useMemo(() => [...session.messages], [session.messages]);
   const hasResearchUrl = researchUrl.trim().length > 0;
@@ -263,6 +269,10 @@ export default function DuetWorkbench() {
     })();
   }, [apiBase, sessionId]);
 
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [sortedMessages.length, isRunning]);
+
   async function loadSession(targetSessionId: string) {
     const trimmed = targetSessionId.trim();
     if (!trimmed) {
@@ -342,6 +352,58 @@ export default function DuetWorkbench() {
     };
   }
 
+  function messageRouteTag(item: SessionMessage): string {
+    if (item.role === "user") {
+      return "@you";
+    }
+    if (item.provider === "openai") {
+      return "@gpt";
+    }
+    if (item.provider === "anthropic") {
+      return "@claude";
+    }
+    return "@agent";
+  }
+
+  async function composeMessageWithAttachments(baseMessage: string): Promise<string> {
+    const trimmedBase = baseMessage.trim();
+    if (attachedFiles.length === 0) {
+      return trimmedBase;
+    }
+    setAttachStatus(`Preparing ${attachedFiles.length} attachment(s)...`);
+
+    const attachmentBlocks: string[] = [];
+    for (const file of attachedFiles) {
+      if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+        attachmentBlocks.push(`- ${file.name}: skipped (larger than 2MB)`);
+        continue;
+      }
+
+      const textLike =
+        file.type.startsWith("text/") ||
+        /\.(txt|md|markdown|json|csv|ts|tsx|js|jsx|py|yaml|yml|toml)$/i.test(file.name);
+      if (!textLike) {
+        attachmentBlocks.push(`- ${file.name}: binary file attached (content not inlined)`);
+        continue;
+      }
+
+      try {
+        const content = await file.text();
+        const clipped = content.slice(0, MAX_ATTACHMENT_TEXT_CHARS);
+        const truncated = content.length > MAX_ATTACHMENT_TEXT_CHARS ? "\n...[truncated]..." : "";
+        attachmentBlocks.push(`### ${file.name}\n${clipped}${truncated}`);
+      } catch {
+        attachmentBlocks.push(`- ${file.name}: could not be read`);
+      }
+    }
+
+    const messageBody = trimmedBase || "Use attached documents as context.";
+    if (attachmentBlocks.length === 0) {
+      return messageBody;
+    }
+    return `${messageBody}\n\n[ATTACHMENTS]\n${attachmentBlocks.join("\n\n")}`;
+  }
+
   async function submitTurn() {
     const trimmed = message.trim();
     if (!trimmed || isRunning) {
@@ -351,14 +413,16 @@ export default function DuetWorkbench() {
 
     setIsRunning(true);
     setError(null);
+    setAttachStatus("");
 
     try {
+      const userMessage = await composeMessageWithAttachments(routing.userMessage);
       const response = await fetch(`${apiBase}/api/duet/turn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionId,
-          user_message: routing.userMessage,
+          user_message: userMessage,
           system_prompt: systemPrompt,
           agents: routing.agents,
         }),
@@ -371,9 +435,12 @@ export default function DuetWorkbench() {
       setSession(payload.session);
       setMemory(normalizeMemory(payload.session.memory));
       setMessage("");
+      setAttachedFiles([]);
+      setAttachStatus("");
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Turn failed";
       setError(messageText);
+      setAttachStatus("");
     } finally {
       setIsRunning(false);
     }
@@ -385,15 +452,17 @@ export default function DuetWorkbench() {
     }
     setIsRunning(true);
     setError(null);
+    setAttachStatus("");
     const seed = message.trim();
     const routing = resolveRouting(seed, activeAgents());
     try {
+      const seedText = await composeMessageWithAttachments(routing.userMessage || "");
       const response = await fetch(`${apiBase}/api/duet/converse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionId,
-          seed_user_message: routing.userMessage || undefined,
+          seed_user_message: seedText || undefined,
           rounds: loopRounds,
           system_prompt: systemPrompt,
           agents: routing.agents,
@@ -407,9 +476,12 @@ export default function DuetWorkbench() {
       setSession(payload.session);
       setMemory(normalizeMemory(payload.session.memory));
       setMessage("");
+      setAttachedFiles([]);
+      setAttachStatus("");
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Agentic loop failed";
       setError(messageText);
+      setAttachStatus("");
     } finally {
       setIsRunning(false);
     }
@@ -641,86 +713,130 @@ export default function DuetWorkbench() {
           </div>
         </header>
 
-        <section className="scribe-panel rounded-2xl p-4">
-          <div className="flex gap-2">
-            <textarea
-              className="h-24 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
-              value={message}
-              onChange={(event) => setMessage(event.target.value)}
-              placeholder="Ask SCRIBE anything. Prefix with @gpt or @claude to route a single turn, or leave untagged for duet."
-            />
-            <button
-              onClick={() => void submitTurn()}
-              disabled={isRunning}
-              className="min-w-28 rounded-xl border border-amber-300/40 bg-amber-500/20 px-4 py-2 text-sm font-medium transition hover:bg-amber-500/35 disabled:opacity-50"
-            >
-              {isRunning ? "Running..." : "Run Turn"}
-            </button>
+        <section className="scribe-panel flex min-h-[68vh] flex-col overflow-hidden rounded-2xl p-0">
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
+            <div className="text-right text-xs text-white/55">
+              <p>{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
+              <p>Mode: {quickMode ? "Quick" : "Workspace"}</p>
+            </div>
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <label className="text-xs text-white/60" htmlFor="agentic-rounds">
-              Agentic rounds
-            </label>
-            <input
-              id="agentic-rounds"
-              type="number"
-              min={1}
-              max={12}
-              value={loopRounds}
-              onChange={(event) => {
-                const parsed = Number.parseInt(event.target.value, 10);
-                const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
-                setLoopRounds(clamped);
-              }}
-              className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
-            />
-            <button
-              onClick={() => void runAgenticLoop()}
-              disabled={isRunning}
-              className="rounded-lg border border-neutral-300/40 bg-neutral-500/15 px-3 py-2 text-xs transition hover:bg-neutral-500/30 disabled:opacity-50"
-            >
-              {isRunning ? "Looping..." : "Run Trio Loop"}
-            </button>
-            <span className="text-xs text-white/50">
-              GPT and Claude alternate, using shared transcript + shared memory each round.
-            </span>
-          </div>
-          <p className="mt-2 text-xs text-white/55">
-            Routing: <span className="font-mono">@gpt</span> for GPT-only, <span className="font-mono">@claude</span>{" "}
-            for Claude-only, or no tag for duet.
-          </p>
-          {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
-          <p className="mt-2 text-xs text-white/55">
-            Mode: {quickMode ? "Quick (default profiles/models)" : "Workspace (custom lane controls enabled)"}
-          </p>
-        </section>
 
-        <section className="scribe-panel rounded-2xl p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-white/70">Shared Transcript</h2>
-            <p className="text-xs text-white/50">{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
-          </div>
-          <div className="scrollbar-thin h-[45vh] space-y-3 overflow-y-auto pr-1">
+          <div className="scrollbar-thin flex-1 space-y-3 overflow-y-auto px-4 py-4">
             {sortedMessages.length === 0 ? (
               <div className="rounded-lg border border-dashed border-white/15 p-4 text-sm text-white/60">
-                Start a turn to populate shared state.
+                Start chatting to populate shared state.
               </div>
             ) : (
               sortedMessages.map((item, index) => (
-                <article
-                  key={`${item.timestamp || "t"}-${index}`}
-                  className={`rounded-lg border p-3 ${
-                    item.role === "user" ? "border-amber-300/30 bg-amber-500/10" : "border-white/15 bg-white/5"
-                  }`}
-                >
-                  <div className="mb-1 flex items-center justify-between text-xs text-white/60">
-                    <span>{item.speaker}</span>
-                    <span className="font-mono">{item.model || item.role}</span>
-                  </div>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/90">{item.content}</p>
-                </article>
+                <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <article
+                    className={`max-w-[90%] rounded-2xl border px-4 py-3 ${
+                      item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
+                    }`}
+                  >
+                    <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
+                      <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
+                      <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
+                        {messageRouteTag(item)}
+                      </span>
+                      <span className="font-mono">{item.model || item.role}</span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
+                  </article>
+                </div>
               ))
             )}
+            <div ref={transcriptEndRef} />
+          </div>
+
+          <div className="border-t border-white/10 px-4 py-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <label
+                htmlFor="scribe-attachments"
+                className="cursor-pointer rounded-lg border border-white/20 px-3 py-1.5 text-xs transition hover:border-amber-300 hover:text-amber-200"
+              >
+                Upload Docs
+              </label>
+              <input
+                id="scribe-attachments"
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  const nextFiles = Array.from(event.target.files || []);
+                  if (nextFiles.length === 0) {
+                    return;
+                  }
+                  setAttachedFiles((previous) => [...previous, ...nextFiles].slice(0, MAX_ATTACHMENTS));
+                  event.currentTarget.value = "";
+                }}
+              />
+              {attachedFiles.map((file, index) => (
+                <span key={`${file.name}-${index}`} className="flex items-center gap-1 rounded-full border border-white/20 px-2 py-1 text-xs text-white/70">
+                  {file.name}
+                  <button
+                    className="text-white/60 hover:text-white"
+                    onClick={() => {
+                      setAttachedFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+                    }}
+                  >
+                    x
+                  </button>
+                </span>
+              ))}
+              {attachStatus && <span className="text-xs text-white/55">{attachStatus}</span>}
+            </div>
+
+            <div className="flex gap-2">
+              <textarea
+                className="h-24 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void submitTurn();
+                  }
+                }}
+                placeholder="Message SCRIBE. Prefix with @gpt or @claude. Enter sends, Shift+Enter adds a line."
+              />
+              <div className="flex w-36 flex-col gap-2">
+                <button
+                  onClick={() => void submitTurn()}
+                  disabled={isRunning}
+                  className="rounded-xl border border-amber-300/40 bg-amber-500/20 px-4 py-2 text-sm font-medium transition hover:bg-amber-500/35 disabled:opacity-50"
+                >
+                  {isRunning ? "Running..." : "Run Turn"}
+                </button>
+                <button
+                  onClick={() => void runAgenticLoop()}
+                  disabled={isRunning}
+                  className="rounded-xl border border-neutral-300/40 bg-neutral-500/15 px-4 py-2 text-sm transition hover:bg-neutral-500/30 disabled:opacity-50"
+                >
+                  Trio Loop
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-white/55">
+              <label htmlFor="agentic-rounds">Agentic rounds</label>
+              <input
+                id="agentic-rounds"
+                type="number"
+                min={1}
+                max={12}
+                value={loopRounds}
+                onChange={(event) => {
+                  const parsed = Number.parseInt(event.target.value, 10);
+                  const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
+                  setLoopRounds(clamped);
+                }}
+                className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
+              />
+              <span>Routing: @gpt, @claude, or no tag for duet.</span>
+            </div>
+            {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
           </div>
         </section>
 
