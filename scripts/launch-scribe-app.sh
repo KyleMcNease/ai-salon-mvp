@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
 LOG_DIR="$RUNTIME_DIR/logs"
 PID_DIR="$RUNTIME_DIR/pids"
@@ -129,6 +129,9 @@ start_frontend() {
 }
 
 open_app() {
+  if [ "${SCRIBE_SKIP_OPEN:-0}" = "1" ]; then
+    return 0
+  fi
   if command -v open >/dev/null 2>&1; then
     open "$FRONTEND_URL"
   elif command -v xdg-open >/dev/null 2>&1; then

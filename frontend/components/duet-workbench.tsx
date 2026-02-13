@@ -69,12 +69,21 @@ type ArtifactDoc = {
   versions: ArtifactVersion[];
 };
 type DiffLine = { kind: "same" | "add" | "del"; text: string };
+type UiPrefs = {
+  quickMode: boolean;
+  transcriptMode: TranscriptMode;
+  railCollapsed: boolean;
+  sidePanel: SidePanel;
+  splitCanvasView: boolean;
+  showPinnedOnly: boolean;
+};
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.2-codex";
 const DEFAULT_ANTHROPIC_MODEL = "opus";
 const MAX_ATTACHMENTS = 6;
 const MAX_ATTACHMENT_SIZE_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT_CHARS = 12_000;
+const UI_PREFS_STORAGE_KEY = "scribe:ui-prefs:v1";
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
@@ -200,6 +209,7 @@ export default function DuetWorkbench() {
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [isCompactViewport, setIsCompactViewport] = useState(false);
   const [embedResearch, setEmbedResearch] = useState(false);
+  const [prefsReady, setPrefsReady] = useState(false);
 
   const [sessionId, setSessionId] = useState<string>("");
   const [systemPrompt, setSystemPrompt] = useState(
@@ -311,6 +321,7 @@ export default function DuetWorkbench() {
     }
     return "";
   }, [researchQuery, message, sortedMessages]);
+  const composerRoute = useMemo(() => detectRoutingTarget(message), [message]);
 
   useEffect(() => {
     void (async () => {
@@ -405,6 +416,64 @@ export default function DuetWorkbench() {
     media.addListener(apply);
     return () => media.removeListener(apply);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      const rawPrefs = window.localStorage.getItem(UI_PREFS_STORAGE_KEY);
+      if (!rawPrefs) {
+        setPrefsReady(true);
+        return;
+      }
+      const parsed = JSON.parse(rawPrefs) as Partial<UiPrefs>;
+      if (typeof parsed.quickMode === "boolean") {
+        setQuickMode(parsed.quickMode);
+      }
+      if (parsed.transcriptMode === "single" || parsed.transcriptMode === "divergence") {
+        setTranscriptMode(parsed.transcriptMode);
+      }
+      if (typeof parsed.railCollapsed === "boolean") {
+        setRailCollapsed(parsed.railCollapsed);
+      }
+      if (
+        parsed.sidePanel === "none" ||
+        parsed.sidePanel === "canvas" ||
+        parsed.sidePanel === "memory" ||
+        parsed.sidePanel === "advanced" ||
+        parsed.sidePanel === "research" ||
+        parsed.sidePanel === "personas"
+      ) {
+        setSidePanel(parsed.sidePanel);
+      }
+      if (typeof parsed.splitCanvasView === "boolean") {
+        setSplitCanvasView(parsed.splitCanvasView);
+      }
+      if (typeof parsed.showPinnedOnly === "boolean") {
+        setShowPinnedOnly(parsed.showPinnedOnly);
+      }
+    } catch {
+      // ignore invalid local preferences
+    } finally {
+      setPrefsReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !prefsReady) {
+      return;
+    }
+    const prefs: UiPrefs = {
+      quickMode,
+      transcriptMode,
+      railCollapsed,
+      sidePanel,
+      splitCanvasView,
+      showPinnedOnly,
+    };
+    window.localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify(prefs));
+  }, [prefsReady, quickMode, transcriptMode, railCollapsed, sidePanel, splitCanvasView, showPinnedOnly]);
 
   useEffect(() => {
     if (!isCompactViewport) {
@@ -509,6 +578,29 @@ export default function DuetWorkbench() {
       agents: defaultAgents,
       target: "duet" as RoutingTarget,
     };
+  }
+
+  function detectRoutingTarget(rawMessage: string): RoutingTarget {
+    const match = rawMessage.trim().match(/^@(gpt|claude|duet|both)\b[:\s-]*/i);
+    if (!match) {
+      return "duet";
+    }
+    const tag = match[1].toLowerCase();
+    if (tag === "gpt" || tag === "claude") {
+      return tag;
+    }
+    return "duet";
+  }
+
+  function setComposerRoute(target: RoutingTarget) {
+    setMessage((previous) => {
+      const stripped = previous.replace(/^@(gpt|claude|duet|both)\b[:\s-]*/i, "").trimStart();
+      if (target === "duet") {
+        return stripped;
+      }
+      return `@${target} ${stripped}`.trim();
+    });
+    requestAnimationFrame(() => composerRef.current?.focus());
   }
 
   function messageRouteTag(item: SessionMessage): string {
@@ -824,6 +916,15 @@ export default function DuetWorkbench() {
     personas: "Personas & Voices",
   };
   const activeRightPanel: SidePanel = splitCanvasView ? "canvas" : sidePanel;
+  const showSplitRightPanel = activeRightPanel !== "none" && splitCanvasView && !isCompactViewport;
+  const showOverlayRightPanel = activeRightPanel !== "none" && !showSplitRightPanel;
+  const railPanelButtons: Array<[Exclude<SidePanel, "none">, string, string]> = [
+    ["canvas", "Canvas", "C"],
+    ["memory", "Memory", "M"],
+    ["advanced", "Advanced", "A"],
+    ["research", "Research", "R"],
+    ["personas", "Personas", "P"],
+  ];
 
   function togglePanel(panel: Exclude<SidePanel, "none">) {
     if (panel !== "canvas") {
@@ -1097,7 +1198,7 @@ export default function DuetWorkbench() {
 
   return (
     <main
-      className={`${spaceGrotesk.className} ${plexMono.variable} scribe-stage relative min-h-screen overflow-x-hidden text-[#f2eee5]`}
+      className={`${spaceGrotesk.className} ${plexMono.variable} scribe-stage relative h-screen overflow-hidden text-[#f2eee5]`}
       style={{
         background:
           "radial-gradient(900px 420px at -10% -4%, rgba(168, 113, 53, 0.24) 0%, transparent 62%), radial-gradient(1000px 500px at 105% -5%, rgba(48, 68, 78, 0.24) 0%, transparent 58%), #07090c",
@@ -1110,7 +1211,7 @@ export default function DuetWorkbench() {
         <div className="scribe-orbit scribe-orbit-b absolute right-[6%] top-[28rem] h-48 w-48" />
       </div>
 
-      <div className="relative z-10 mx-auto flex w-full max-w-[92rem] flex-col gap-3 px-3 py-3 md:px-6 md:py-4">
+      <div className="relative z-10 mx-auto flex h-full w-full max-w-[92rem] min-h-0 flex-col gap-3 px-3 py-3 md:px-6 md:py-4">
         <header className="scribe-panel scribe-hero rounded-2xl p-3 backdrop-blur md:p-3.5">
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
@@ -1169,10 +1270,10 @@ export default function DuetWorkbench() {
           </div>
         </header>
 
-        <section className="scribe-panel overflow-hidden rounded-3xl p-0">
-          <div className="flex min-h-[74vh] flex-col lg:flex-row">
+        <section className="scribe-panel flex min-h-0 flex-1 overflow-hidden rounded-3xl p-0">
+          <div className="relative flex min-h-0 w-full flex-col lg:flex-row">
             <aside
-              className={`border-b border-white/10 bg-black/25 transition-all duration-200 lg:border-b-0 lg:border-r lg:border-white/10 ${
+              className={`min-h-0 border-b border-white/10 bg-black/25 transition-all duration-200 lg:border-b-0 lg:border-r lg:border-white/10 ${
                 railCollapsed ? "lg:w-[3.75rem]" : "lg:w-[17.5rem]"
               }`}
             >
@@ -1188,13 +1289,7 @@ export default function DuetWorkbench() {
 
               {!railCollapsed && (
                 <div className="grid gap-2 px-3 py-3">
-                  {([
-                    ["canvas", "Canvas"],
-                    ["memory", "Memory"],
-                    ["advanced", "Advanced"],
-                    ["research", "Research"],
-                    ["personas", "Personas"],
-                  ] as Array<[Exclude<SidePanel, "none">, string]>).map(([panel, label]) => (
+                  {railPanelButtons.map(([panel, label]) => (
                     <button
                       key={panel}
                       onClick={() => togglePanel(panel)}
@@ -1210,6 +1305,25 @@ export default function DuetWorkbench() {
                   ))}
                 </div>
               )}
+              {railCollapsed && (
+                <div className="grid gap-2 px-2 py-3">
+                  {railPanelButtons.map(([panel, label, icon]) => (
+                    <button
+                      key={panel}
+                      onClick={() => togglePanel(panel)}
+                      className={`grid h-9 w-full place-items-center rounded-md border text-[11px] transition ${
+                        sidePanel === panel
+                          ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                          : "border-white/15 text-white/70 hover:border-amber-300/45 hover:text-amber-100"
+                      }`}
+                      title={label}
+                      aria-label={label}
+                    >
+                      {icon}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {!railCollapsed && (
                 <div className="border-t border-white/10 px-3 py-3 text-xs text-white/55">
@@ -1219,7 +1333,7 @@ export default function DuetWorkbench() {
               )}
             </aside>
 
-            <div className="flex min-w-0 flex-1 flex-col">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-3 lg:px-6">
                 <div className="flex items-center gap-2">
                   <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
@@ -1253,7 +1367,7 @@ export default function DuetWorkbench() {
               </div>
 
               <div
-                className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6"
+                className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6"
                 tabIndex={0}
                 onKeyDown={handlePaneKeyScroll}
               >
@@ -1370,6 +1484,11 @@ export default function DuetWorkbench() {
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
                     onKeyDown={(event) => {
+                      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                        event.preventDefault();
+                        void runAgenticLoop();
+                        return;
+                      }
                       if (event.key === "Enter" && !event.shiftKey) {
                         event.preventDefault();
                         void submitTurn();
@@ -1396,6 +1515,37 @@ export default function DuetWorkbench() {
                 </div>
 
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-white/55">
+                  <span>Route</span>
+                  <button
+                    onClick={() => setComposerRoute("duet")}
+                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
+                      composerRoute === "duet"
+                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                        : "border-white/20 text-white/70 hover:border-amber-300/45"
+                    }`}
+                  >
+                    duet
+                  </button>
+                  <button
+                    onClick={() => setComposerRoute("gpt")}
+                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
+                      composerRoute === "gpt"
+                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                        : "border-white/20 text-white/70 hover:border-amber-300/45"
+                    }`}
+                  >
+                    @gpt
+                  </button>
+                  <button
+                    onClick={() => setComposerRoute("claude")}
+                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
+                      composerRoute === "claude"
+                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                        : "border-white/20 text-white/70 hover:border-amber-300/45"
+                    }`}
+                  >
+                    @claude
+                  </button>
                   <label htmlFor="agentic-rounds">Agentic rounds</label>
                   <input
                     id="agentic-rounds"
@@ -1410,37 +1560,50 @@ export default function DuetWorkbench() {
                     }}
                     className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
                   />
-                  <span>Enter sends. Shift+Enter creates a new line.</span>
+                  <span>Enter sends. Shift+Enter newline. Cmd/Ctrl+Enter runs trio loop.</span>
                 </div>
                 {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
               </div>
             </div>
 
-            {activeRightPanel !== "none" && (
-              <aside className="border-t border-white/10 bg-black/20 lg:w-[26rem] lg:border-l lg:border-t-0 lg:border-white/10">
-                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-white/75">
-                    {sidePanelTitles[activeRightPanel as Exclude<SidePanel, "none">]}
-                  </h3>
-                  <button
-                    onClick={() => {
-                      if (splitCanvasView) {
-                        setSplitCanvasView(false);
-                      } else {
-                        setSidePanel("none");
-                      }
-                    }}
-                    className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-200"
-                  >
-                    {splitCanvasView ? "Undock" : "Close"}
-                  </button>
-                </div>
-
+            {(showSplitRightPanel || showOverlayRightPanel) && (
+              <aside
+                className={
+                  showSplitRightPanel
+                    ? "min-h-0 border-t border-white/10 bg-black/20 lg:w-[26rem] lg:border-l lg:border-t-0 lg:border-white/10"
+                    : "pointer-events-none absolute inset-y-0 right-0 z-30 flex w-full justify-end p-2 lg:p-3"
+                }
+              >
                 <div
-                  className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll h-[58vh] overflow-y-auto px-4 py-4 lg:h-[74vh]"
-                  tabIndex={0}
-                  onKeyDown={handlePaneKeyScroll}
+                  className={
+                    showSplitRightPanel
+                      ? "flex min-h-0 h-full w-full flex-col"
+                      : "pointer-events-auto flex h-full w-full max-w-[26rem] flex-col overflow-hidden rounded-2xl border border-white/15 bg-black/80 shadow-2xl shadow-black/55 backdrop-blur"
+                  }
                 >
+                  <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-white/75">
+                      {sidePanelTitles[activeRightPanel as Exclude<SidePanel, "none">]}
+                    </h3>
+                    <button
+                      onClick={() => {
+                        if (splitCanvasView) {
+                          setSplitCanvasView(false);
+                        } else {
+                          setSidePanel("none");
+                        }
+                      }}
+                      className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-200"
+                    >
+                      {splitCanvasView ? "Undock" : "Close"}
+                    </button>
+                  </div>
+
+                  <div
+                    className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4"
+                    tabIndex={0}
+                    onKeyDown={handlePaneKeyScroll}
+                  >
                   {activeRightPanel === "canvas" && (
                     <div className="grid gap-3">
                       <div className="flex flex-wrap gap-2">
@@ -1967,7 +2130,8 @@ export default function DuetWorkbench() {
                       )}
                     </div>
                   )}
-                </div>
+                  </div>
+              </div>
               </aside>
             )}
           </div>

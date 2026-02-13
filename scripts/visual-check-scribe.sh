@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
 SCREENSHOT_DIR="$RUNTIME_DIR/screenshots"
 URL="${SCRIBE_URL:-http://127.0.0.1:3000}"
@@ -12,7 +12,7 @@ mkdir -p "$SCREENSHOT_DIR"
 echo "== SCRIBE visual check =="
 echo "[step] Restarting app"
 "$ROOT_DIR/scripts/stop-scribe-app.sh" >/dev/null 2>&1 || true
-"$ROOT_DIR/scripts/launch-scribe-app.sh" >/dev/null 2>&1
+SCRIBE_SKIP_OPEN=1 "$ROOT_DIR/scripts/launch-scribe-app.sh" >/dev/null 2>&1
 
 echo "[step] Waiting for $URL"
 for _ in $(seq 1 120); do
