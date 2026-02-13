@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Cinzel, IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 
 type SessionMessage = {
@@ -51,6 +51,7 @@ type BridgeAgent = {
   label: string;
 };
 type SidePanel = "none" | "canvas" | "memory" | "advanced" | "research" | "personas";
+type TranscriptMode = "single" | "divergence";
 type ArtifactVersion = {
   id: string;
   title: string;
@@ -194,6 +195,7 @@ export default function DuetWorkbench() {
   const researchAppDefault = process.env.NEXT_PUBLIC_RESEARCH_APP_URL || "";
 
   const [quickMode, setQuickMode] = useState(true);
+  const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("single");
   const [sidePanel, setSidePanel] = useState<SidePanel>("none");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [embedResearch, setEmbedResearch] = useState(false);
@@ -1032,6 +1034,39 @@ export default function DuetWorkbench() {
     setSplitCanvasView(true);
   }
 
+  function handlePaneKeyScroll(event: KeyboardEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    const source = event.target as HTMLElement | null;
+    const tag = source?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select" || source?.isContentEditable) {
+      return;
+    }
+
+    let delta = 0;
+    if (event.key === "ArrowDown") {
+      delta = 60;
+    } else if (event.key === "ArrowUp") {
+      delta = -60;
+    } else if (event.key === "PageDown") {
+      delta = target.clientHeight * 0.9;
+    } else if (event.key === "PageUp") {
+      delta = -target.clientHeight * 0.9;
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      target.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    } else if (event.key === "End") {
+      event.preventDefault();
+      target.scrollTo({ top: target.scrollHeight, behavior: "auto" });
+      return;
+    }
+
+    if (delta !== 0) {
+      event.preventDefault();
+      target.scrollBy({ top: delta, behavior: "auto" });
+    }
+  }
+
   return (
     <main
       className={`${spaceGrotesk.className} ${plexMono.variable} scribe-stage relative min-h-screen overflow-x-hidden text-[#f2eee5]`}
@@ -1157,18 +1192,76 @@ export default function DuetWorkbench() {
             </aside>
 
             <div className="flex min-w-0 flex-1 flex-col">
-              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 lg:px-6">
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-3 lg:px-6">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
+                  <button
+                    onClick={() => setTranscriptMode("single")}
+                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
+                      transcriptMode === "single"
+                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                        : "border-white/20 text-white/70 hover:border-amber-300/45"
+                    }`}
+                  >
+                    Single Thread
+                  </button>
+                  <button
+                    onClick={() => setTranscriptMode("divergence")}
+                    className={`rounded-full border px-2 py-1 text-[11px] transition ${
+                      transcriptMode === "divergence"
+                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                        : "border-white/20 text-white/70 hover:border-amber-300/45"
+                    }`}
+                  >
+                    Divergence
+                  </button>
+                </div>
                 <div className="text-right text-xs text-white/55">
                   <p>{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
-                  <p>Mode: {quickMode ? "Quick" : "Workspace"}</p>
+                  <p>
+                    Mode: {quickMode ? "Quick" : "Workspace"} · View: {transcriptMode}
+                  </p>
                 </div>
               </div>
 
-              <div className="scrollbar-thin scribe-stable-scroll flex-1 space-y-3 overflow-y-scroll px-4 py-4 lg:px-6">
+              <div
+                className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6"
+                tabIndex={0}
+                onKeyDown={handlePaneKeyScroll}
+              >
                 {sortedMessages.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-white/15 p-4 text-sm text-white/60">
                     Start chatting to populate shared state.
+                  </div>
+                ) : transcriptMode === "single" ? (
+                  <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-white/15 bg-black/25">
+                    {sortedMessages.map((item, index) => (
+                      <article
+                        key={`${item.timestamp || "t"}-${index}`}
+                        className={`px-4 py-3 ${
+                          index < sortedMessages.length - 1 ? "border-b border-white/10" : ""
+                        } ${item.role === "user" ? "bg-amber-500/7" : "bg-transparent"}`}
+                      >
+                        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
+                          <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
+                          <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
+                            {messageRouteTag(item)}
+                          </span>
+                          <span className="font-mono">{item.model || item.role}</span>
+                        </div>
+                        <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
+                        {item.role !== "user" && (
+                          <div className="mt-3 flex items-center justify-end">
+                            <button
+                              onClick={() => createArtifactFromMessage(item, index)}
+                              className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                            >
+                              Open in Canvas
+                            </button>
+                          </div>
+                        )}
+                      </article>
+                    ))}
                   </div>
                 ) : (
                   sortedMessages.map((item, index) => (
@@ -1315,7 +1408,11 @@ export default function DuetWorkbench() {
                   </button>
                 </div>
 
-                <div className="scrollbar-thin scribe-stable-scroll h-[58vh] overflow-y-scroll px-4 py-4 lg:h-[74vh]">
+                <div
+                  className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll h-[58vh] overflow-y-auto px-4 py-4 lg:h-[74vh]"
+                  tabIndex={0}
+                  onKeyDown={handlePaneKeyScroll}
+                >
                   {activeRightPanel === "canvas" && (
                     <div className="grid gap-3">
                       <div className="flex flex-wrap gap-2">
@@ -1531,7 +1628,7 @@ export default function DuetWorkbench() {
                                 </div>
 
                                 {showCanvasDiff && selectedCanvasVersion && (
-                                  <div className="mt-3 max-h-56 overflow-y-scroll rounded-md border border-white/10 bg-black/25 px-2 py-2 font-mono text-[11px]">
+                                  <div className="mt-3 max-h-56 overflow-y-auto rounded-md border border-white/10 bg-black/25 px-2 py-2 font-mono text-[11px] scribe-scroll-ghost">
                                     {canvasDiffLines.length === 0 ? (
                                       <p className="text-white/55">No diff.</p>
                                     ) : (

@@ -253,4 +253,14 @@
   .scribe-stable-scroll {
     scrollbar-gutter: stable both-edges;
   }
+
+  .scribe-scroll-ghost {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scribe-scroll-ghost::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
 }
