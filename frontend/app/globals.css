@@ -26,6 +26,7 @@
 
   body {
     @apply bg-background text-foreground;
+    scrollbar-gutter: stable both-edges;
   }
 
   /* Typography Base Styles */
@@ -247,5 +248,9 @@
   .scribe-stage button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .scribe-stable-scroll {
+    scrollbar-gutter: stable both-edges;
   }
 }

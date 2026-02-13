@@ -50,6 +50,15 @@ type BridgeAgent = {
   profile_id: string;
   label: string;
 };
+type SidePanel = "none" | "canvas" | "memory" | "advanced" | "research" | "personas";
+type ArtifactDoc = {
+  id: string;
+  title: string;
+  content: string;
+  sourceSpeaker: string;
+  sourceModel?: string;
+  updatedAt: string;
+};
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.2-codex";
 const DEFAULT_ANTHROPIC_MODEL = "opus";
@@ -130,10 +139,8 @@ export default function DuetWorkbench() {
   const researchAppDefault = process.env.NEXT_PUBLIC_RESEARCH_APP_URL || "";
 
   const [quickMode, setQuickMode] = useState(true);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showResearch, setShowResearch] = useState(false);
-  const [showPersonas, setShowPersonas] = useState(false);
-  const [showMemory, setShowMemory] = useState(false);
+  const [sidePanel, setSidePanel] = useState<SidePanel>("none");
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const [embedResearch, setEmbedResearch] = useState(false);
 
   const [sessionId, setSessionId] = useState<string>("");
@@ -173,10 +180,16 @@ export default function DuetWorkbench() {
 
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [voices, setVoices] = useState<string[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactDoc[]>([]);
+  const [activeArtifactId, setActiveArtifactId] = useState<string>("");
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   const sortedMessages = useMemo(() => [...session.messages], [session.messages]);
   const hasResearchUrl = researchUrl.trim().length > 0;
+  const activeArtifact = useMemo(
+    () => artifacts.find((artifact) => artifact.id === activeArtifactId) || null,
+    [artifacts, activeArtifactId]
+  );
 
   const latestUserPrompt = useMemo(() => {
     if (researchQuery.trim()) {
@@ -270,7 +283,7 @@ export default function DuetWorkbench() {
   }, [apiBase, sessionId]);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    transcriptEndRef.current?.scrollIntoView({ block: "end" });
   }, [sortedMessages.length, isRunning]);
 
   async function loadSession(targetSessionId: string) {
@@ -657,6 +670,41 @@ export default function DuetWorkbench() {
 
   const openaiProfiles = profiles.filter((profile) => profile.provider === "openai");
   const anthropicProfiles = profiles.filter((profile) => profile.provider === "anthropic");
+  const sidePanelTitles: Record<Exclude<SidePanel, "none">, string> = {
+    canvas: "Canvas",
+    memory: "Shared Memory",
+    advanced: "Advanced Controls",
+    research: "Research Surface",
+    personas: "Personas & Voices",
+  };
+
+  function togglePanel(panel: Exclude<SidePanel, "none">) {
+    setSidePanel((previous) => (previous === panel ? "none" : panel));
+  }
+
+  function createArtifactFromMessage(messageItem: SessionMessage, index: number) {
+    const trimmed = messageItem.content?.trim();
+    if (!trimmed) {
+      return;
+    }
+    const titleCandidate = trimmed.split("\n")[0]?.trim() || "Untitled artifact";
+    const title = titleCandidate.slice(0, 64);
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `artifact-${Date.now()}-${index}`;
+    const nextArtifact: ArtifactDoc = {
+      id,
+      title,
+      content: messageItem.content,
+      sourceSpeaker: messageItem.speaker || "Assistant",
+      sourceModel: messageItem.model,
+      updatedAt: new Date().toISOString(),
+    };
+    setArtifacts((previous) => [nextArtifact, ...previous].slice(0, 24));
+    setActiveArtifactId(id);
+    setSidePanel("canvas");
+  }
 
   return (
     <main
@@ -673,17 +721,17 @@ export default function DuetWorkbench() {
         <div className="scribe-orbit scribe-orbit-b absolute right-[6%] top-[28rem] h-48 w-48" />
       </div>
 
-      <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-8 md:px-6">
+      <div className="relative z-10 mx-auto flex w-full max-w-[92rem] flex-col gap-4 px-3 py-5 md:px-6">
         <header className="scribe-panel scribe-hero rounded-3xl p-5 backdrop-blur md:p-6">
           <p className="text-xs uppercase tracking-[0.3em] text-[#d7b389]">SCRIBE Closed Loop</p>
-          <h1 className={`${cinzel.className} mt-3 text-4xl font-semibold tracking-[0.08em] text-[#f2e4cf] md:text-5xl`}>
+          <h1 className={`${cinzel.className} mt-3 text-3xl font-semibold tracking-[0.08em] text-[#f2e4cf] md:text-5xl`}>
             SCRIBE
           </h1>
-          <p className="mt-2 max-w-3xl text-sm text-[#e8dccd]/85">
-            Personal-first workspace with progressive disclosure: fast duet by default, deeper controls and research
-            surfaces only when you open them.
+          <p className="mt-2 max-w-4xl text-sm text-[#e8dccd]/85">
+            One chat surface for you, GPT, and Claude. Route with `@gpt` or `@claude`, or leave untagged for duet with
+            shared memory and shared transcript.
           </p>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
             <button
               onClick={() => setQuickMode(true)}
               className={`rounded-full border px-3 py-1 text-xs transition ${
@@ -697,7 +745,7 @@ export default function DuetWorkbench() {
             <button
               onClick={() => {
                 setQuickMode(false);
-                setShowAdvanced(true);
+                setSidePanel("advanced");
               }}
               className={`rounded-full border px-3 py-1 text-xs transition ${
                 !quickMode
@@ -710,481 +758,560 @@ export default function DuetWorkbench() {
             <span className="rounded-full border border-[#f1d8b3]/25 bg-black/35 px-3 py-1 text-xs text-[#e5d7c3]/80">
               Shared Session: <span className="font-mono text-[#f5e8d0]">{sessionId}</span>
             </span>
+            <span className="rounded-full border border-white/15 bg-black/35 px-3 py-1 text-[#e5d7c3]/80">
+              {quickMode ? "Quick profile defaults" : "Workspace custom profiles/models"}
+            </span>
           </div>
         </header>
 
-        <section className="scribe-panel flex min-h-[68vh] flex-col overflow-hidden rounded-2xl p-0">
-          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
-            <div className="text-right text-xs text-white/55">
-              <p>{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
-              <p>Mode: {quickMode ? "Quick" : "Workspace"}</p>
-            </div>
-          </div>
-
-          <div className="scrollbar-thin flex-1 space-y-3 overflow-y-auto px-4 py-4">
-            {sortedMessages.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-white/15 p-4 text-sm text-white/60">
-                Start chatting to populate shared state.
+        <section className="scribe-panel overflow-hidden rounded-3xl p-0">
+          <div className="flex min-h-[74vh] flex-col lg:flex-row">
+            <aside
+              className={`border-b border-white/10 bg-black/25 transition-all duration-200 lg:border-b-0 lg:border-r lg:border-white/10 ${
+                railCollapsed ? "lg:w-[5rem]" : "lg:w-[17.5rem]"
+              }`}
+            >
+              <div className="flex items-center justify-between border-b border-white/10 px-3 py-3">
+                {!railCollapsed && <h2 className="text-xs uppercase tracking-[0.24em] text-white/65">SCRIBE Rail</h2>}
+                <button
+                  onClick={() => setRailCollapsed((previous) => !previous)}
+                  className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-200"
+                >
+                  {railCollapsed ? "Expand" : "Collapse"}
+                </button>
               </div>
-            ) : (
-              sortedMessages.map((item, index) => (
-                <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <article
-                    className={`max-w-[90%] rounded-2xl border px-4 py-3 ${
-                      item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
+
+              <div className="grid gap-2 px-3 py-3">
+                {([
+                  ["canvas", "Canvas"],
+                  ["memory", "Memory"],
+                  ["advanced", "Advanced"],
+                  ["research", "Research"],
+                  ["personas", "Personas"],
+                ] as Array<[Exclude<SidePanel, "none">, string]>).map(([panel, label]) => (
+                  <button
+                    key={panel}
+                    onClick={() => togglePanel(panel)}
+                    className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                      sidePanel === panel
+                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                        : "border-white/15 text-white/75 hover:border-amber-300/40 hover:text-amber-100"
                     }`}
+                    title={label}
                   >
-                    <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
-                      <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
-                      <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
-                        {messageRouteTag(item)}
-                      </span>
-                      <span className="font-mono">{item.model || item.role}</span>
-                    </div>
-                    <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
-                  </article>
-                </div>
-              ))
-            )}
-            <div ref={transcriptEndRef} />
-          </div>
-
-          <div className="border-t border-white/10 px-4 py-3">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <label
-                htmlFor="scribe-attachments"
-                className="cursor-pointer rounded-lg border border-white/20 px-3 py-1.5 text-xs transition hover:border-amber-300 hover:text-amber-200"
-              >
-                Upload Docs
-              </label>
-              <input
-                id="scribe-attachments"
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  const nextFiles = Array.from(event.target.files || []);
-                  if (nextFiles.length === 0) {
-                    return;
-                  }
-                  setAttachedFiles((previous) => [...previous, ...nextFiles].slice(0, MAX_ATTACHMENTS));
-                  event.currentTarget.value = "";
-                }}
-              />
-              {attachedFiles.map((file, index) => (
-                <span key={`${file.name}-${index}`} className="flex items-center gap-1 rounded-full border border-white/20 px-2 py-1 text-xs text-white/70">
-                  {file.name}
-                  <button
-                    className="text-white/60 hover:text-white"
-                    onClick={() => {
-                      setAttachedFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
-                    }}
-                  >
-                    x
+                    {railCollapsed ? label.slice(0, 1) : label}
                   </button>
-                </span>
-              ))}
-              {attachStatus && <span className="text-xs text-white/55">{attachStatus}</span>}
-            </div>
-
-            <div className="flex gap-2">
-              <textarea
-                className="h-24 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void submitTurn();
-                  }
-                }}
-                placeholder="Message SCRIBE. Prefix with @gpt or @claude. Enter sends, Shift+Enter adds a line."
-              />
-              <div className="flex w-36 flex-col gap-2">
-                <button
-                  onClick={() => void submitTurn()}
-                  disabled={isRunning}
-                  className="rounded-xl border border-amber-300/40 bg-amber-500/20 px-4 py-2 text-sm font-medium transition hover:bg-amber-500/35 disabled:opacity-50"
-                >
-                  {isRunning ? "Running..." : "Run Turn"}
-                </button>
-                <button
-                  onClick={() => void runAgenticLoop()}
-                  disabled={isRunning}
-                  className="rounded-xl border border-neutral-300/40 bg-neutral-500/15 px-4 py-2 text-sm transition hover:bg-neutral-500/30 disabled:opacity-50"
-                >
-                  Trio Loop
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-white/55">
-              <label htmlFor="agentic-rounds">Agentic rounds</label>
-              <input
-                id="agentic-rounds"
-                type="number"
-                min={1}
-                max={12}
-                value={loopRounds}
-                onChange={(event) => {
-                  const parsed = Number.parseInt(event.target.value, 10);
-                  const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
-                  setLoopRounds(clamped);
-                }}
-                className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
-              />
-              <span>Routing: @gpt, @claude, or no tag for duet.</span>
-            </div>
-            {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
-          </div>
-        </section>
-
-        <section className="scribe-panel rounded-2xl p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-200">Shared Memory</h2>
-              <p className="mt-1 text-xs text-white/60">
-                Durable memory used by both GPT and Claude every turn.
-              </p>
-            </div>
-            <button
-              onClick={() => setShowMemory((previous) => !previous)}
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
-            >
-              {showMemory ? "Hide Memory" : "Reveal Memory"}
-            </button>
-          </div>
-
-          {showMemory && (
-            <div className="mt-4 grid gap-3">
-              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                <label className="block text-xs uppercase tracking-wider text-white/60">Summary</label>
-                <textarea
-                  className="mt-2 h-16 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
-                  value={memorySummaryInput}
-                  onChange={(event) => setMemorySummaryInput(event.target.value)}
-                />
-              </div>
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                  <label className="block text-xs uppercase tracking-wider text-white/60">Key Facts</label>
-                  <textarea
-                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
-                    value={memoryFactsInput}
-                    onChange={(event) => setMemoryFactsInput(event.target.value)}
-                    placeholder="One fact per line"
-                  />
-                </div>
-                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                  <label className="block text-xs uppercase tracking-wider text-white/60">User Preferences</label>
-                  <textarea
-                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
-                    value={memoryPrefsInput}
-                    onChange={(event) => setMemoryPrefsInput(event.target.value)}
-                    placeholder="One preference per line"
-                  />
-                </div>
-                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                  <label className="block text-xs uppercase tracking-wider text-white/60">Agent Notes</label>
-                  <textarea
-                    className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
-                    value={memoryNotesInput}
-                    onChange={(event) => setMemoryNotesInput(event.target.value)}
-                    placeholder="One note per line"
-                  />
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => void saveMemory()}
-                  className="rounded-lg border border-amber-300/40 px-3 py-2 text-xs transition hover:bg-amber-500/25"
-                >
-                  Save Memory
-                </button>
-                <button
-                  onClick={() => void refreshMemory()}
-                  className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
-                >
-                  Refresh Memory
-                </button>
-                <span className="text-xs text-white/55">
-                  {memoryStatus || (memory.updated_at ? `Updated ${memory.updated_at}` : "No memory yet")}
-                </span>
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="scribe-panel rounded-2xl p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-stone-200">Advanced SCRIBE Controls</h2>
-              <p className="mt-1 text-xs text-white/60">Hidden by default for progressive disclosure.</p>
-            </div>
-            <button
-              onClick={() => setShowAdvanced((previous) => !previous)}
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-stone-300 hover:text-stone-200"
-            >
-              {showAdvanced ? "Hide Controls" : "Reveal Controls"}
-            </button>
-          </div>
-
-          {showAdvanced && (
-            <div className="mt-4 grid gap-4">
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <label className="block text-xs uppercase tracking-wider text-white/60">Session ID</label>
-                <div className="mt-2 flex gap-2">
-                  <input
-                    className="w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none ring-0 focus:border-stone-400"
-                    value={sessionId}
-                    onChange={(event) => setSessionId(event.target.value)}
-                  />
-                  <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-stone-300 hover:text-stone-200"
-                    onClick={() => void loadSession(sessionId)}
-                  >
-                    Load
-                  </button>
-                  <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-orange-300 hover:text-orange-200"
-                    onClick={() => setSessionId(randomSessionId())}
-                  >
-                    New
-                  </button>
-                </div>
+                ))}
               </div>
 
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <label className="block text-xs uppercase tracking-wider text-white/60">System Prompt</label>
-                <textarea
-                  className="mt-2 h-20 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
-                  value={systemPrompt}
-                  onChange={(event) => setSystemPrompt(event.target.value)}
-                />
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-stone-200">Codex Lane</h3>
-                  <div className="mt-3 grid gap-2">
-                    <input
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
-                      value={openaiModel}
-                      onChange={(event) => setOpenaiModel(event.target.value)}
-                      placeholder={DEFAULT_OPENAI_MODEL}
-                    />
-                    <select
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
-                      value={openaiProfile}
-                      onChange={(event) => setOpenaiProfile(event.target.value)}
-                    >
-                      {openaiProfiles.length === 0 ? (
-                        <option value="openai:default">openai:default</option>
-                      ) : (
-                        openaiProfiles.map((profile) => (
-                          <option key={profile.id} value={profile.id}>
-                            {profile.id} ({profile.auth_mode})
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-orange-200">Claude Lane</h3>
-                  <div className="mt-3 grid gap-2">
-                    <input
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"
-                      value={anthropicModel}
-                      onChange={(event) => setAnthropicModel(event.target.value)}
-                      placeholder={DEFAULT_ANTHROPIC_MODEL}
-                    />
-                    <select
-                      className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"
-                      value={anthropicProfile}
-                      onChange={(event) => setAnthropicProfile(event.target.value)}
-                    >
-                      {anthropicProfiles.length === 0 ? (
-                        <option value="anthropic:default">anthropic:default</option>
-                      ) : (
-                        anthropicProfiles.map((profile) => (
-                          <option key={profile.id} value={profile.id}>
-                            {profile.id} ({profile.auth_mode})
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="scribe-panel rounded-2xl p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-200">Research Surface</h2>
-              <p className="mt-1 text-xs text-white/60">
-                Hidden until needed. Handoff and ingest keep SCRIBE + Research synchronized.
-              </p>
-            </div>
-            <button
-              onClick={() => setShowResearch((previous) => !previous)}
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
-            >
-              {showResearch ? "Hide Research" : "Reveal Research"}
-            </button>
-          </div>
-
-          {showResearch && (
-            <div className="mt-4 space-y-4">
-              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                <label className="block text-xs uppercase tracking-wider text-white/60">Research App URL</label>
-                <input
-                  className="mt-2 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
-                  placeholder="http://localhost:3001"
-                  value={researchUrl}
-                  onChange={(event) => setResearchUrl(event.target.value)}
-                />
-                <label className="mt-3 block text-xs uppercase tracking-wider text-white/60">Research Query</label>
-                <textarea
-                  className="mt-2 h-20 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
-                  value={researchQuery}
-                  onChange={(event) => setResearchQuery(event.target.value)}
-                  placeholder="Optional. Leave blank to use current/last user prompt."
-                />
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {(["hybrid", "novix", "llnl", "google"] as ResearchMode[]).map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => setResearchMode(mode)}
-                      className={`rounded-full border px-3 py-1 text-xs transition ${
-                        researchMode === mode
-                          ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                          : "border-white/20 text-white/70 hover:border-amber-300/40"
-                      }`}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
-                    onClick={() => void createResearchHandoff()}
-                  >
-                    Create Handoff
-                  </button>
-                  <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200 disabled:opacity-50"
-                    disabled={!hasResearchUrl}
-                    onClick={() => openResearch(researchMode)}
-                  >
-                    Open {researchMode} in Research App
-                  </button>
-                  <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200 disabled:opacity-50"
-                    disabled={!hasResearchUrl}
-                    onClick={() => setEmbedResearch((previous) => !previous)}
-                  >
-                    {embedResearch ? "Hide Embed" : "Embed Here"}
-                  </button>
-                </div>
-
-                {(handoffStatus || researchHandoffId) && (
-                  <p className="mt-2 text-xs text-white/60">
-                    {handoffStatus}
-                    {researchHandoffId ? ` (id: ${researchHandoffId})` : ""}
-                  </p>
-                )}
-                {!hasResearchUrl && (
-                  <p className="mt-2 text-xs text-white/50">
-                    Set <span className="font-mono">NEXT_PUBLIC_RESEARCH_APP_URL</span> to keep this connected by default.
-                  </p>
-                )}
-              </div>
-
-              {embedResearch && hasResearchUrl && (
-                <div className="overflow-hidden rounded-xl border border-white/10 bg-black/30">
-                  <div className="border-b border-white/10 px-3 py-2 text-xs text-white/60">Embedded research app</div>
-                  <iframe src={buildResearchLaunchUrl(researchMode)} title="Research App" className="h-[420px] w-full bg-white" />
+              {!railCollapsed && (
+                <div className="border-t border-white/10 px-3 py-3 text-xs text-white/55">
+                  <p>Routing</p>
+                  <p className="mt-1 font-mono text-[11px] text-white/75">@gpt / @claude / duet</p>
                 </div>
               )}
+            </aside>
 
-              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                <label className="block text-xs uppercase tracking-wider text-white/60">Ingest Research Output</label>
-                <textarea
-                  className="mt-2 h-28 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
-                  value={ingestText}
-                  onChange={(event) => setIngestText(event.target.value)}
-                  placeholder='Paste JSON from research app (e.g. {"title":"...","summary":"...","findings":[...]}) or plain summary text.'
-                />
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
-                    onClick={() => void ingestResearch()}
-                  >
-                    Ingest to SCRIBE
-                  </button>
-                  {ingestStatus && <span className="text-xs text-white/60">{ingestStatus}</span>}
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 lg:px-6">
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-white/75">Shared Transcript</h2>
+                <div className="text-right text-xs text-white/55">
+                  <p>{session.updated_at ? `Updated ${session.updated_at}` : "No turns yet"}</p>
+                  <p>Mode: {quickMode ? "Quick" : "Workspace"}</p>
                 </div>
               </div>
-            </div>
-          )}
-        </section>
 
-        <section className="scribe-panel rounded-2xl p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200">Personas & Voices</h2>
-              <p className="mt-1 text-xs text-white/60">Verify persona roster and assign voices while you evaluate a new local voice model.</p>
-            </div>
-            <button
-              onClick={() => setShowPersonas((previous) => !previous)}
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-neutral-300 hover:text-neutral-200"
-            >
-              {showPersonas ? "Hide Personas" : "Reveal Personas"}
-            </button>
-          </div>
-
-          {showPersonas && (
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {personas.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-white/15 p-3 text-xs text-white/60">
-                  Persona metadata unavailable.
-                </div>
-              ) : (
-                personas.map((persona) => (
-                  <div key={persona.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <div className="text-sm font-semibold text-white/90">{persona.name}</div>
-                        <div className="text-xs uppercase tracking-wide text-white/50">{persona.role}</div>
-                      </div>
-                      <select
-                        value={persona.voice_id || ""}
-                        onChange={(event) => void setPersonaVoice(persona.id, event.target.value)}
-                        className="rounded-md border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-neutral-300"
+              <div className="scrollbar-thin scribe-stable-scroll flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6">
+                {sortedMessages.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-white/15 p-4 text-sm text-white/60">
+                    Start chatting to populate shared state.
+                  </div>
+                ) : (
+                  sortedMessages.map((item, index) => (
+                    <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
+                      <article
+                        className={`max-w-[94%] rounded-2xl border px-4 py-3 ${
+                          item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
+                        }`}
                       >
-                        <option value="">(default)</option>
-                        {voices.map((voice) => (
-                          <option key={voice} value={voice}>
-                            {voice}
-                          </option>
-                        ))}
-                      </select>
+                        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
+                          <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
+                          <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
+                            {messageRouteTag(item)}
+                          </span>
+                          <span className="font-mono">{item.model || item.role}</span>
+                        </div>
+                        <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
+                        {item.role !== "user" && (
+                          <div className="mt-3 flex items-center justify-end">
+                            <button
+                              onClick={() => createArtifactFromMessage(item, index)}
+                              className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                            >
+                              Open in Canvas
+                            </button>
+                          </div>
+                        )}
+                      </article>
                     </div>
-                    {persona.description && <p className="mt-2 text-xs text-white/65">{persona.description}</p>}
+                  ))
+                )}
+                <div ref={transcriptEndRef} />
+              </div>
+
+              <div className="border-t border-white/10 px-4 py-3 lg:px-6">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <label
+                    htmlFor="scribe-attachments"
+                    className="cursor-pointer rounded-lg border border-white/20 px-3 py-1.5 text-xs transition hover:border-amber-300 hover:text-amber-200"
+                  >
+                    Upload Docs
+                  </label>
+                  <input
+                    id="scribe-attachments"
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(event) => {
+                      const nextFiles = Array.from(event.target.files || []);
+                      if (nextFiles.length === 0) {
+                        return;
+                      }
+                      setAttachedFiles((previous) => [...previous, ...nextFiles].slice(0, MAX_ATTACHMENTS));
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  {attachedFiles.map((file, index) => (
+                    <span key={`${file.name}-${index}`} className="flex items-center gap-1 rounded-full border border-white/20 px-2 py-1 text-xs text-white/70">
+                      {file.name}
+                      <button
+                        className="text-white/60 hover:text-white"
+                        onClick={() => {
+                          setAttachedFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+                        }}
+                        aria-label={`Remove ${file.name}`}
+                      >
+                        x
+                      </button>
+                    </span>
+                  ))}
+                  {attachStatus && <span className="text-xs text-white/55">{attachStatus}</span>}
+                </div>
+
+                <div className="flex flex-col gap-2 md:flex-row">
+                  <textarea
+                    className="h-28 w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-400"
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void submitTurn();
+                      }
+                    }}
+                    placeholder="Ask SCRIBE anything. Prefix with @gpt or @claude, or leave untagged for duet."
+                  />
+                  <div className="flex w-full flex-row gap-2 md:w-44 md:flex-col">
+                    <button
+                      onClick={() => void submitTurn()}
+                      disabled={isRunning}
+                      className="h-11 flex-1 rounded-xl border border-amber-300/40 bg-amber-500/20 px-4 py-2 text-sm font-medium transition hover:bg-amber-500/35 disabled:opacity-50"
+                    >
+                      {isRunning ? "Running..." : "Run Turn"}
+                    </button>
+                    <button
+                      onClick={() => void runAgenticLoop()}
+                      disabled={isRunning}
+                      className="h-11 flex-1 rounded-xl border border-neutral-300/40 bg-neutral-500/15 px-4 py-2 text-sm transition hover:bg-neutral-500/30 disabled:opacity-50"
+                    >
+                      Run Trio Loop
+                    </button>
                   </div>
-                ))
-              )}
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-white/55">
+                  <label htmlFor="agentic-rounds">Agentic rounds</label>
+                  <input
+                    id="agentic-rounds"
+                    type="number"
+                    min={1}
+                    max={12}
+                    value={loopRounds}
+                    onChange={(event) => {
+                      const parsed = Number.parseInt(event.target.value, 10);
+                      const clamped = Number.isNaN(parsed) ? 1 : Math.max(1, Math.min(12, parsed));
+                      setLoopRounds(clamped);
+                    }}
+                    className="w-20 rounded-lg border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
+                  />
+                  <span>Enter sends. Shift+Enter creates a new line.</span>
+                </div>
+                {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
+              </div>
             </div>
-          )}
+
+            {sidePanel !== "none" && (
+              <aside className="border-t border-white/10 bg-black/20 lg:w-[26rem] lg:border-l lg:border-t-0 lg:border-white/10">
+                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-white/75">{sidePanelTitles[sidePanel]}</h3>
+                  <button
+                    onClick={() => setSidePanel("none")}
+                    className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-200"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="scrollbar-thin scribe-stable-scroll h-[58vh] overflow-y-auto px-4 py-4 lg:h-[74vh]">
+                  {sidePanel === "canvas" && (
+                    <div className="grid gap-3">
+                      {artifacts.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs text-white/60">
+                          Create a canvas doc from any assistant response using &quot;Open in Canvas&quot;.
+                        </div>
+                      ) : (
+                        <>
+                          <div className="grid gap-2">
+                            {artifacts.map((artifact) => (
+                              <button
+                                key={artifact.id}
+                                onClick={() => setActiveArtifactId(artifact.id)}
+                                className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                                  activeArtifactId === artifact.id
+                                    ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                                    : "border-white/15 text-white/75 hover:border-amber-300/45"
+                                }`}
+                              >
+                                <div className="font-medium">{artifact.title || "Untitled artifact"}</div>
+                                <div className="mt-1 text-[11px] text-white/55">
+                                  {artifact.sourceSpeaker} {artifact.sourceModel ? `· ${artifact.sourceModel}` : ""}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                          {activeArtifact && (
+                            <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                              <label className="block text-[11px] uppercase tracking-wider text-white/55">Title</label>
+                              <input
+                                className="mt-2 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                                value={activeArtifact.title}
+                                onChange={(event) =>
+                                  setArtifacts((previous) =>
+                                    previous.map((item) =>
+                                      item.id === activeArtifact.id
+                                        ? { ...item, title: event.target.value, updatedAt: new Date().toISOString() }
+                                        : item
+                                    )
+                                  )
+                                }
+                              />
+                              <label className="mt-3 block text-[11px] uppercase tracking-wider text-white/55">Content</label>
+                              <textarea
+                                className="mt-2 h-72 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                                value={activeArtifact.content}
+                                onChange={(event) =>
+                                  setArtifacts((previous) =>
+                                    previous.map((item) =>
+                                      item.id === activeArtifact.id
+                                        ? { ...item, content: event.target.value, updatedAt: new Date().toISOString() }
+                                        : item
+                                    )
+                                  )
+                                }
+                              />
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {sidePanel === "memory" && (
+                    <div className="grid gap-3">
+                      <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                        <label className="block text-xs uppercase tracking-wider text-white/60">Summary</label>
+                        <textarea
+                          className="mt-2 h-16 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                          value={memorySummaryInput}
+                          onChange={(event) => setMemorySummaryInput(event.target.value)}
+                        />
+                      </div>
+                      <div className="grid gap-3">
+                        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <label className="block text-xs uppercase tracking-wider text-white/60">Key Facts</label>
+                          <textarea
+                            className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
+                            value={memoryFactsInput}
+                            onChange={(event) => setMemoryFactsInput(event.target.value)}
+                            placeholder="One fact per line"
+                          />
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <label className="block text-xs uppercase tracking-wider text-white/60">User Preferences</label>
+                          <textarea
+                            className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
+                            value={memoryPrefsInput}
+                            onChange={(event) => setMemoryPrefsInput(event.target.value)}
+                            placeholder="One preference per line"
+                          />
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <label className="block text-xs uppercase tracking-wider text-white/60">Agent Notes</label>
+                          <textarea
+                            className="mt-2 h-24 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs outline-none focus:border-amber-300"
+                            value={memoryNotesInput}
+                            onChange={(event) => setMemoryNotesInput(event.target.value)}
+                            placeholder="One note per line"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={() => void saveMemory()}
+                          className="rounded-lg border border-amber-300/40 px-3 py-2 text-xs transition hover:bg-amber-500/25"
+                        >
+                          Save Memory
+                        </button>
+                        <button
+                          onClick={() => void refreshMemory()}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
+                        >
+                          Refresh Memory
+                        </button>
+                        <span className="text-xs text-white/55">
+                          {memoryStatus || (memory.updated_at ? `Updated ${memory.updated_at}` : "No memory yet")}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {sidePanel === "advanced" && (
+                    <div className="grid gap-4">
+                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                        <label className="block text-xs uppercase tracking-wider text-white/60">Session ID</label>
+                        <div className="mt-2 flex gap-2">
+                          <input
+                            className="w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none ring-0 focus:border-stone-400"
+                            value={sessionId}
+                            onChange={(event) => setSessionId(event.target.value)}
+                          />
+                          <button
+                            className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-stone-300 hover:text-stone-200"
+                            onClick={() => void loadSession(sessionId)}
+                          >
+                            Load
+                          </button>
+                          <button
+                            className="rounded-lg border border-white/20 px-3 py-2 text-sm transition hover:border-orange-300 hover:text-orange-200"
+                            onClick={() => setSessionId(randomSessionId())}
+                          >
+                            New
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                        <label className="block text-xs uppercase tracking-wider text-white/60">System Prompt</label>
+                        <textarea
+                          className="mt-2 h-20 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
+                          value={systemPrompt}
+                          onChange={(event) => setSystemPrompt(event.target.value)}
+                        />
+                      </div>
+
+                      <div className="grid gap-4">
+                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                          <h4 className="text-sm font-semibold uppercase tracking-wider text-stone-200">Codex Lane</h4>
+                          <div className="mt-3 grid gap-2">
+                            <input
+                              className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
+                              value={openaiModel}
+                              onChange={(event) => setOpenaiModel(event.target.value)}
+                              placeholder={DEFAULT_OPENAI_MODEL}
+                            />
+                            <select
+                              className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-stone-400"
+                              value={openaiProfile}
+                              onChange={(event) => setOpenaiProfile(event.target.value)}
+                            >
+                              {openaiProfiles.length === 0 ? (
+                                <option value="openai:default">openai:default</option>
+                              ) : (
+                                openaiProfiles.map((profile) => (
+                                  <option key={profile.id} value={profile.id}>
+                                    {profile.id} ({profile.auth_mode})
+                                  </option>
+                                ))
+                              )}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                          <h4 className="text-sm font-semibold uppercase tracking-wider text-orange-200">Claude Lane</h4>
+                          <div className="mt-3 grid gap-2">
+                            <input
+                              className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"
+                              value={anthropicModel}
+                              onChange={(event) => setAnthropicModel(event.target.value)}
+                              placeholder={DEFAULT_ANTHROPIC_MODEL}
+                            />
+                            <select
+                              className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-orange-400"
+                              value={anthropicProfile}
+                              onChange={(event) => setAnthropicProfile(event.target.value)}
+                            >
+                              {anthropicProfiles.length === 0 ? (
+                                <option value="anthropic:default">anthropic:default</option>
+                              ) : (
+                                anthropicProfiles.map((profile) => (
+                                  <option key={profile.id} value={profile.id}>
+                                    {profile.id} ({profile.auth_mode})
+                                  </option>
+                                ))
+                              )}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {sidePanel === "research" && (
+                    <div className="space-y-4">
+                      <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                        <label className="block text-xs uppercase tracking-wider text-white/60">Research App URL</label>
+                        <input
+                          className="mt-2 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                          placeholder="http://localhost:3001"
+                          value={researchUrl}
+                          onChange={(event) => setResearchUrl(event.target.value)}
+                        />
+                        <label className="mt-3 block text-xs uppercase tracking-wider text-white/60">Research Query</label>
+                        <textarea
+                          className="mt-2 h-20 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                          value={researchQuery}
+                          onChange={(event) => setResearchQuery(event.target.value)}
+                          placeholder="Optional. Leave blank to use current/last user prompt."
+                        />
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {(["hybrid", "novix", "llnl", "google"] as ResearchMode[]).map((mode) => (
+                            <button
+                              key={mode}
+                              onClick={() => setResearchMode(mode)}
+                              className={`rounded-full border px-3 py-1 text-xs transition ${
+                                researchMode === mode
+                                  ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                                  : "border-white/20 text-white/70 hover:border-amber-300/40"
+                              }`}
+                            >
+                              {mode}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
+                            onClick={() => void createResearchHandoff()}
+                          >
+                            Create Handoff
+                          </button>
+                          <button
+                            className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200 disabled:opacity-50"
+                            disabled={!hasResearchUrl}
+                            onClick={() => openResearch(researchMode)}
+                          >
+                            Open {researchMode}
+                          </button>
+                          <button
+                            className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200 disabled:opacity-50"
+                            disabled={!hasResearchUrl}
+                            onClick={() => setEmbedResearch((previous) => !previous)}
+                          >
+                            {embedResearch ? "Hide Embed" : "Embed Here"}
+                          </button>
+                        </div>
+
+                        {(handoffStatus || researchHandoffId) && (
+                          <p className="mt-2 text-xs text-white/60">
+                            {handoffStatus}
+                            {researchHandoffId ? ` (id: ${researchHandoffId})` : ""}
+                          </p>
+                        )}
+                        {!hasResearchUrl && (
+                          <p className="mt-2 text-xs text-white/50">
+                            Set <span className="font-mono">NEXT_PUBLIC_RESEARCH_APP_URL</span> to keep this connected by default.
+                          </p>
+                        )}
+                      </div>
+
+                      {embedResearch && hasResearchUrl && (
+                        <div className="overflow-hidden rounded-xl border border-white/10 bg-black/30">
+                          <div className="border-b border-white/10 px-3 py-2 text-xs text-white/60">Embedded research app</div>
+                          <iframe src={buildResearchLaunchUrl(researchMode)} title="Research App" className="h-[340px] w-full bg-white" />
+                        </div>
+                      )}
+
+                      <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                        <label className="block text-xs uppercase tracking-wider text-white/60">Ingest Research Output</label>
+                        <textarea
+                          className="mt-2 h-28 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                          value={ingestText}
+                          onChange={(event) => setIngestText(event.target.value)}
+                          placeholder='Paste JSON from research app (e.g. {"title":"...","summary":"...","findings":[...]}) or plain summary text.'
+                        />
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-200"
+                            onClick={() => void ingestResearch()}
+                          >
+                            Ingest to SCRIBE
+                          </button>
+                          {ingestStatus && <span className="text-xs text-white/60">{ingestStatus}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {sidePanel === "personas" && (
+                    <div className="grid gap-3">
+                      {personas.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-white/15 p-3 text-xs text-white/60">
+                          Persona metadata unavailable.
+                        </div>
+                      ) : (
+                        personas.map((persona) => (
+                          <div key={persona.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div>
+                                <div className="text-sm font-semibold text-white/90">{persona.name}</div>
+                                <div className="text-xs uppercase tracking-wide text-white/50">{persona.role}</div>
+                              </div>
+                              <select
+                                value={persona.voice_id || ""}
+                                onChange={(event) => void setPersonaVoice(persona.id, event.target.value)}
+                                className="rounded-md border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-neutral-300"
+                              >
+                                <option value="">(default)</option>
+                                {voices.map((voice) => (
+                                  <option key={voice} value={voice}>
+                                    {voice}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {persona.description && <p className="mt-2 text-xs text-white/65">{persona.description}</p>}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </aside>
+            )}
+          </div>
         </section>
       </div>
     </main>
