@@ -198,6 +198,7 @@ export default function DuetWorkbench() {
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("single");
   const [sidePanel, setSidePanel] = useState<SidePanel>("none");
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [isCompactViewport, setIsCompactViewport] = useState(false);
   const [embedResearch, setEmbedResearch] = useState(false);
 
   const [sessionId, setSessionId] = useState<string>("");
@@ -389,6 +390,33 @@ export default function DuetWorkbench() {
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ block: "end" });
   }, [sortedMessages.length, isRunning]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const media = window.matchMedia("(max-width: 1279px)");
+    const apply = () => setIsCompactViewport(media.matches);
+    apply();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", apply);
+      return () => media.removeEventListener("change", apply);
+    }
+    media.addListener(apply);
+    return () => media.removeListener(apply);
+  }, []);
+
+  useEffect(() => {
+    if (!isCompactViewport) {
+      return;
+    }
+    if (!railCollapsed) {
+      setRailCollapsed(true);
+    }
+    if (sidePanel !== "none" && !splitCanvasView) {
+      setSidePanel("none");
+    }
+  }, [isCompactViewport, railCollapsed, sidePanel, splitCanvasView]);
 
   useEffect(() => {
     if (!activeArtifact) {
@@ -1082,62 +1110,62 @@ export default function DuetWorkbench() {
         <div className="scribe-orbit scribe-orbit-b absolute right-[6%] top-[28rem] h-48 w-48" />
       </div>
 
-      <div className="relative z-10 mx-auto flex w-full max-w-[92rem] flex-col gap-4 px-3 py-5 md:px-6">
-        <header className="scribe-panel scribe-hero rounded-3xl p-5 backdrop-blur md:p-6">
-          <p className="text-xs uppercase tracking-[0.3em] text-[#d7b389]">SCRIBE Closed Loop</p>
-          <h1 className={`${cinzel.className} mt-3 text-3xl font-semibold tracking-[0.08em] text-[#f2e4cf] md:text-5xl`}>
-            SCRIBE
-          </h1>
-          <p className="mt-2 max-w-4xl text-sm text-[#e8dccd]/85">
-            One chat surface for you, GPT, and Claude. Route with `@gpt` or `@claude`, or leave untagged for duet with
-            shared memory and shared transcript.
-          </p>
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
-            <button
-              onClick={() => setQuickMode(true)}
-              className={`rounded-full border px-3 py-1 text-xs transition ${
-                quickMode
-                  ? "border-[#d7a466]/70 bg-[#b68042]/30 text-[#f8eddb]"
-                  : "border-white/20 text-white/70 hover:border-[#d7a466]/45"
-              }`}
-            >
-              Quick Mode
-            </button>
-            <button
-              onClick={() => {
-                setQuickMode(false);
-                setSidePanel("advanced");
-              }}
-              className={`rounded-full border px-3 py-1 text-xs transition ${
-                !quickMode
-                  ? "border-[#c2b08f]/70 bg-[#a58b66]/25 text-[#f1e7d8]"
-                  : "border-white/20 text-white/70 hover:border-[#c2b08f]/45"
-              }`}
-            >
-              Workspace Mode
-            </button>
-            <button
-              onClick={() => setRailCollapsed((previous) => !previous)}
-              className="rounded-full border px-3 py-1 text-xs transition border-white/20 text-white/75 hover:border-amber-300/45"
-            >
-              {railCollapsed ? "Show Sidebar" : "Hide Sidebar"}
-            </button>
-            <button
-              onClick={() => toggleSplitCanvasDock()}
-              className={`rounded-full border px-3 py-1 text-xs transition ${
-                splitCanvasView
-                  ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
-                  : "border-white/20 text-white/75 hover:border-amber-300/45"
-              }`}
-            >
-              {splitCanvasView ? "Undock Canvas" : "Split Canvas"}
-            </button>
-            <span className="rounded-full border border-[#f1d8b3]/25 bg-black/35 px-3 py-1 text-xs text-[#e5d7c3]/80">
-              Shared Session: <span className="font-mono text-[#f5e8d0]">{sessionId}</span>
-            </span>
-            <span className="rounded-full border border-white/15 bg-black/35 px-3 py-1 text-[#e5d7c3]/80">
-              {quickMode ? "Quick profile defaults" : "Workspace custom profiles/models"}
-            </span>
+      <div className="relative z-10 mx-auto flex w-full max-w-[92rem] flex-col gap-3 px-3 py-3 md:px-6 md:py-4">
+        <header className="scribe-panel scribe-hero rounded-2xl p-3 backdrop-blur md:p-3.5">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-[0.24em] text-[#d7b389]">SCRIBE Closed Loop</p>
+              <h1 className={`${cinzel.className} text-2xl font-semibold tracking-[0.06em] text-[#f2e4cf] md:text-3xl`}>
+                SCRIBE
+              </h1>
+              <p className="max-w-3xl text-xs text-[#e8dccd]/75">
+                @gpt / @claude routing with shared memory and shared transcript.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                onClick={() => setQuickMode(true)}
+                className={`rounded-full border px-3 py-1 text-xs transition ${
+                  quickMode
+                    ? "border-[#d7a466]/70 bg-[#b68042]/30 text-[#f8eddb]"
+                    : "border-white/20 text-white/70 hover:border-[#d7a466]/45"
+                }`}
+              >
+                Quick
+              </button>
+              <button
+                onClick={() => {
+                  setQuickMode(false);
+                  setSidePanel("advanced");
+                }}
+                className={`rounded-full border px-3 py-1 text-xs transition ${
+                  !quickMode
+                    ? "border-[#c2b08f]/70 bg-[#a58b66]/25 text-[#f1e7d8]"
+                    : "border-white/20 text-white/70 hover:border-[#c2b08f]/45"
+                }`}
+              >
+                Workspace
+              </button>
+              <button
+                onClick={() => setRailCollapsed((previous) => !previous)}
+                className="rounded-full border px-3 py-1 text-xs transition border-white/20 text-white/75 hover:border-amber-300/45"
+              >
+                {railCollapsed ? "Show Rail" : "Hide Rail"}
+              </button>
+              <button
+                onClick={() => toggleSplitCanvasDock()}
+                className={`rounded-full border px-3 py-1 text-xs transition ${
+                  splitCanvasView
+                    ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                    : "border-white/20 text-white/75 hover:border-amber-300/45"
+                }`}
+              >
+                {splitCanvasView ? "Undock Canvas" : "Split Canvas"}
+              </button>
+              <span className="rounded-full border border-[#f1d8b3]/25 bg-black/35 px-3 py-1 text-xs text-[#e5d7c3]/80">
+                Session: <span className="font-mono text-[#f5e8d0]">{sessionId}</span>
+              </span>
+            </div>
           </div>
         </header>
 
