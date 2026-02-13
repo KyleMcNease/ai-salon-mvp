@@ -51,6 +51,13 @@ type BridgeAgent = {
   label: string;
 };
 type SidePanel = "none" | "canvas" | "memory" | "advanced" | "research" | "personas";
+type ArtifactVersion = {
+  id: string;
+  title: string;
+  content: string;
+  updatedAt: string;
+  note?: string;
+};
 type ArtifactDoc = {
   id: string;
   title: string;
@@ -58,7 +65,9 @@ type ArtifactDoc = {
   sourceSpeaker: string;
   sourceModel?: string;
   updatedAt: string;
+  versions: ArtifactVersion[];
 };
+type DiffLine = { kind: "same" | "add" | "del"; text: string };
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.2-codex";
 const DEFAULT_ANTHROPIC_MODEL = "opus";
@@ -85,6 +94,52 @@ function randomSessionId(): string {
     return crypto.randomUUID();
   }
   return `session-${Date.now()}`;
+}
+
+function localId(prefix: string): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}`;
+}
+
+function buildLineDiff(before: string, after: string): DiffLine[] {
+  const left = before.split("\n");
+  const right = after.split("\n");
+  const lines: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length || j < right.length) {
+    const a = left[i];
+    const b = right[j];
+    if (a === b) {
+      if (a !== undefined) {
+        lines.push({ kind: "same", text: a });
+      }
+      i += 1;
+      j += 1;
+      continue;
+    }
+    if (b !== undefined && left[i] === right[j + 1]) {
+      lines.push({ kind: "add", text: b });
+      j += 1;
+      continue;
+    }
+    if (a !== undefined && left[i + 1] === right[j]) {
+      lines.push({ kind: "del", text: a });
+      i += 1;
+      continue;
+    }
+    if (a !== undefined) {
+      lines.push({ kind: "del", text: a });
+      i += 1;
+    }
+    if (b !== undefined) {
+      lines.push({ kind: "add", text: b });
+      j += 1;
+    }
+  }
+  return lines;
 }
 
 function emptyMemory(): SessionMemory {
@@ -182,6 +237,11 @@ export default function DuetWorkbench() {
   const [voices, setVoices] = useState<string[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactDoc[]>([]);
   const [activeArtifactId, setActiveArtifactId] = useState<string>("");
+  const [canvasDraftTitle, setCanvasDraftTitle] = useState("");
+  const [canvasDraftContent, setCanvasDraftContent] = useState("");
+  const [selectedCanvasVersionId, setSelectedCanvasVersionId] = useState("");
+  const [showCanvasDiff, setShowCanvasDiff] = useState(false);
+  const [canvasStatus, setCanvasStatus] = useState("");
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   const sortedMessages = useMemo(() => [...session.messages], [session.messages]);
@@ -190,6 +250,18 @@ export default function DuetWorkbench() {
     () => artifacts.find((artifact) => artifact.id === activeArtifactId) || null,
     [artifacts, activeArtifactId]
   );
+  const selectedCanvasVersion = useMemo(() => {
+    if (!activeArtifact) {
+      return null;
+    }
+    return activeArtifact.versions.find((version) => version.id === selectedCanvasVersionId) || activeArtifact.versions[0] || null;
+  }, [activeArtifact, selectedCanvasVersionId]);
+  const canvasDiffLines = useMemo(() => {
+    if (!selectedCanvasVersion) {
+      return [];
+    }
+    return buildLineDiff(selectedCanvasVersion.content, canvasDraftContent);
+  }, [selectedCanvasVersion, canvasDraftContent]);
 
   const latestUserPrompt = useMemo(() => {
     if (researchQuery.trim()) {
@@ -285,6 +357,20 @@ export default function DuetWorkbench() {
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ block: "end" });
   }, [sortedMessages.length, isRunning]);
+
+  useEffect(() => {
+    if (!activeArtifact) {
+      setCanvasDraftTitle("");
+      setCanvasDraftContent("");
+      setSelectedCanvasVersionId("");
+      setShowCanvasDiff(false);
+      return;
+    }
+    setCanvasDraftTitle(activeArtifact.title);
+    setCanvasDraftContent(activeArtifact.content);
+    setSelectedCanvasVersionId(activeArtifact.versions[0]?.id || "");
+    setShowCanvasDiff(false);
+  }, [activeArtifactId, activeArtifact]);
 
   async function loadSession(targetSessionId: string) {
     const trimmed = targetSessionId.trim();
@@ -682,6 +768,46 @@ export default function DuetWorkbench() {
     setSidePanel((previous) => (previous === panel ? "none" : panel));
   }
 
+  function createArtifactDoc(params: {
+    title: string;
+    content: string;
+    sourceSpeaker: string;
+    sourceModel?: string;
+    note?: string;
+  }): ArtifactDoc {
+    const now = new Date().toISOString();
+    const version: ArtifactVersion = {
+      id: localId("ver"),
+      title: params.title,
+      content: params.content,
+      updatedAt: now,
+      note: params.note,
+    };
+    return {
+      id: localId("artifact"),
+      title: params.title,
+      content: params.content,
+      sourceSpeaker: params.sourceSpeaker,
+      sourceModel: params.sourceModel,
+      updatedAt: now,
+      versions: [version],
+    };
+  }
+
+  function createBlankArtifact() {
+    const doc = createArtifactDoc({
+      title: "Untitled artifact",
+      content: "",
+      sourceSpeaker: "You",
+      sourceModel: "manual",
+      note: "manual-create",
+    });
+    setArtifacts((previous) => [doc, ...previous].slice(0, 24));
+    setActiveArtifactId(doc.id);
+    setSidePanel("canvas");
+    setCanvasStatus("New canvas artifact created.");
+  }
+
   function createArtifactFromMessage(messageItem: SessionMessage, index: number) {
     const trimmed = messageItem.content?.trim();
     if (!trimmed) {
@@ -689,21 +815,152 @@ export default function DuetWorkbench() {
     }
     const titleCandidate = trimmed.split("\n")[0]?.trim() || "Untitled artifact";
     const title = titleCandidate.slice(0, 64);
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `artifact-${Date.now()}-${index}`;
-    const nextArtifact: ArtifactDoc = {
-      id,
-      title,
+    const nextArtifact = createArtifactDoc({
       content: messageItem.content,
+      title,
       sourceSpeaker: messageItem.speaker || "Assistant",
       sourceModel: messageItem.model,
-      updatedAt: new Date().toISOString(),
-    };
+      note: `capture-${index}`,
+    });
     setArtifacts((previous) => [nextArtifact, ...previous].slice(0, 24));
-    setActiveArtifactId(id);
+    setActiveArtifactId(nextArtifact.id);
     setSidePanel("canvas");
+    setCanvasStatus("Captured response into canvas.");
+  }
+
+  function saveCanvasSnapshot() {
+    if (!activeArtifact) {
+      return;
+    }
+    const nextTitle = canvasDraftTitle.trim() || "Untitled artifact";
+    const nextContent = canvasDraftContent;
+    const changed = nextTitle !== activeArtifact.title || nextContent !== activeArtifact.content;
+    if (!changed) {
+      setCanvasStatus("No changes to save.");
+      return;
+    }
+    const now = new Date().toISOString();
+    const nextVersion: ArtifactVersion = {
+      id: localId("ver"),
+      title: nextTitle,
+      content: nextContent,
+      updatedAt: now,
+      note: "manual-save",
+    };
+    setArtifacts((previous) =>
+      previous.map((item) =>
+        item.id === activeArtifact.id
+          ? {
+              ...item,
+              title: nextTitle,
+              content: nextContent,
+              updatedAt: now,
+              versions: [nextVersion, ...item.versions].slice(0, 50),
+            }
+          : item
+      )
+    );
+    setSelectedCanvasVersionId(nextVersion.id);
+    setCanvasStatus("Snapshot saved.");
+  }
+
+  function loadSelectedVersionToDraft() {
+    if (!selectedCanvasVersion) {
+      return;
+    }
+    setCanvasDraftTitle(selectedCanvasVersion.title);
+    setCanvasDraftContent(selectedCanvasVersion.content);
+    setCanvasStatus("Loaded selected version into draft.");
+  }
+
+  function restoreSelectedVersion() {
+    if (!activeArtifact || !selectedCanvasVersion) {
+      return;
+    }
+    const now = new Date().toISOString();
+    const nextVersion: ArtifactVersion = {
+      id: localId("ver"),
+      title: selectedCanvasVersion.title,
+      content: selectedCanvasVersion.content,
+      updatedAt: now,
+      note: `restore-${selectedCanvasVersion.updatedAt}`,
+    };
+    setArtifacts((previous) =>
+      previous.map((item) =>
+        item.id === activeArtifact.id
+          ? {
+              ...item,
+              title: selectedCanvasVersion.title,
+              content: selectedCanvasVersion.content,
+              updatedAt: now,
+              versions: [nextVersion, ...item.versions].slice(0, 50),
+            }
+          : item
+      )
+    );
+    setCanvasDraftTitle(selectedCanvasVersion.title);
+    setCanvasDraftContent(selectedCanvasVersion.content);
+    setSelectedCanvasVersionId(nextVersion.id);
+    setCanvasStatus("Version restored.");
+  }
+
+  function deleteActiveArtifact() {
+    if (!activeArtifact) {
+      return;
+    }
+    setArtifacts((previous) => {
+      const remaining = previous.filter((item) => item.id !== activeArtifact.id);
+      if (remaining.length > 0) {
+        setActiveArtifactId(remaining[0].id);
+      } else {
+        setActiveArtifactId("");
+      }
+      return remaining;
+    });
+    setCanvasStatus("Artifact deleted.");
+  }
+
+  function exportCanvasArtifact(format: "md" | "txt" | "json") {
+    if (!activeArtifact) {
+      return;
+    }
+    const safeTitle = (canvasDraftTitle.trim() || "artifact").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
+    let body = canvasDraftContent;
+    if (format === "md") {
+      body = `# ${canvasDraftTitle.trim() || "Untitled artifact"}\n\n${canvasDraftContent}`;
+    } else if (format === "json") {
+      body = JSON.stringify(
+        {
+          title: canvasDraftTitle.trim() || "Untitled artifact",
+          content: canvasDraftContent,
+          sourceSpeaker: activeArtifact.sourceSpeaker,
+          sourceModel: activeArtifact.sourceModel,
+          updatedAt: new Date().toISOString(),
+          versions: activeArtifact.versions,
+        },
+        null,
+        2
+      );
+    }
+    const blob = new Blob([body], { type: format === "json" ? "application/json" : "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${safeTitle}.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setCanvasStatus(`Exported ${format.toUpperCase()}.`);
+  }
+
+  async function copyCanvasContent() {
+    try {
+      await navigator.clipboard.writeText(canvasDraftContent);
+      setCanvasStatus("Canvas content copied.");
+    } catch {
+      setCanvasStatus("Unable to copy. Check browser permissions.");
+    }
   }
 
   return (
@@ -821,7 +1078,7 @@ export default function DuetWorkbench() {
                 </div>
               </div>
 
-              <div className="scrollbar-thin scribe-stable-scroll flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6">
+              <div className="scrollbar-thin scribe-stable-scroll flex-1 space-y-3 overflow-y-scroll px-4 py-4 lg:px-6">
                 {sortedMessages.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-white/15 p-4 text-sm text-white/60">
                     Start chatting to populate shared state.
@@ -962,14 +1219,69 @@ export default function DuetWorkbench() {
                   </button>
                 </div>
 
-                <div className="scrollbar-thin scribe-stable-scroll h-[58vh] overflow-y-auto px-4 py-4 lg:h-[74vh]">
+                <div className="scrollbar-thin scribe-stable-scroll h-[58vh] overflow-y-scroll px-4 py-4 lg:h-[74vh]">
                   {sidePanel === "canvas" && (
                     <div className="grid gap-3">
-                      {artifacts.length === 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => createBlankArtifact()}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100"
+                        >
+                          New Artifact
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => saveCanvasSnapshot()}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Save Snapshot
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => void copyCanvasContent()}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Copy
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => exportCanvasArtifact("md")}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Export MD
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => exportCanvasArtifact("txt")}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Export TXT
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => exportCanvasArtifact("json")}
+                          className="rounded-lg border border-white/20 px-3 py-2 text-xs transition hover:border-amber-300 hover:text-amber-100 disabled:opacity-50"
+                        >
+                          Export JSON
+                        </button>
+                        <button
+                          disabled={!activeArtifact}
+                          onClick={() => deleteActiveArtifact()}
+                          className="rounded-lg border border-rose-300/40 px-3 py-2 text-xs text-rose-200 transition hover:border-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+
+                      {canvasStatus && <p className="text-xs text-white/60">{canvasStatus}</p>}
+
+                      {artifacts.length === 0 && (
                         <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs text-white/60">
                           Create a canvas doc from any assistant response using &quot;Open in Canvas&quot;.
                         </div>
-                      ) : (
+                      )}
+
+                      {artifacts.length > 0 && (
                         <>
                           <div className="grid gap-2">
                             {artifacts.map((artifact) => (
@@ -989,36 +1301,89 @@ export default function DuetWorkbench() {
                               </button>
                             ))}
                           </div>
+
                           {activeArtifact && (
-                            <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                              <label className="block text-[11px] uppercase tracking-wider text-white/55">Title</label>
-                              <input
-                                className="mt-2 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
-                                value={activeArtifact.title}
-                                onChange={(event) =>
-                                  setArtifacts((previous) =>
-                                    previous.map((item) =>
-                                      item.id === activeArtifact.id
-                                        ? { ...item, title: event.target.value, updatedAt: new Date().toISOString() }
-                                        : item
-                                    )
-                                  )
-                                }
-                              />
-                              <label className="mt-3 block text-[11px] uppercase tracking-wider text-white/55">Content</label>
-                              <textarea
-                                className="mt-2 h-72 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
-                                value={activeArtifact.content}
-                                onChange={(event) =>
-                                  setArtifacts((previous) =>
-                                    previous.map((item) =>
-                                      item.id === activeArtifact.id
-                                        ? { ...item, content: event.target.value, updatedAt: new Date().toISOString() }
-                                        : item
-                                    )
-                                  )
-                                }
-                              />
+                            <div className="grid gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+                              <div>
+                                <label className="block text-[11px] uppercase tracking-wider text-white/55">Title</label>
+                                <input
+                                  className="mt-2 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                                  value={canvasDraftTitle}
+                                  onChange={(event) => setCanvasDraftTitle(event.target.value)}
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-[11px] uppercase tracking-wider text-white/55">Content</label>
+                                <textarea
+                                  className="mt-2 h-64 w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                                  value={canvasDraftContent}
+                                  onChange={(event) => setCanvasDraftContent(event.target.value)}
+                                />
+                              </div>
+
+                              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <label className="text-[11px] uppercase tracking-wider text-white/55">Version</label>
+                                  <select
+                                    value={selectedCanvasVersionId}
+                                    onChange={(event) => setSelectedCanvasVersionId(event.target.value)}
+                                    className="min-w-[12rem] rounded-md border border-white/20 bg-black/40 px-2 py-1 text-xs outline-none focus:border-amber-300"
+                                  >
+                                    {activeArtifact.versions.map((version) => (
+                                      <option key={version.id} value={version.id}>
+                                        {version.updatedAt}
+                                        {version.note ? ` (${version.note})` : ""}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    onClick={() => loadSelectedVersionToDraft()}
+                                    className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                                  >
+                                    Load to Draft
+                                  </button>
+                                  <button
+                                    onClick={() => restoreSelectedVersion()}
+                                    className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                                  >
+                                    Restore Live
+                                  </button>
+                                  <button
+                                    onClick={() => setShowCanvasDiff((previous) => !previous)}
+                                    className={`rounded-md border px-2 py-1 text-[11px] transition ${
+                                      showCanvasDiff
+                                        ? "border-amber-300/70 bg-amber-500/20 text-amber-100"
+                                        : "border-white/20 text-white/75 hover:border-amber-300/45"
+                                    }`}
+                                  >
+                                    {showCanvasDiff ? "Hide Diff" : "Show Diff"}
+                                  </button>
+                                </div>
+
+                                {showCanvasDiff && selectedCanvasVersion && (
+                                  <div className="mt-3 max-h-56 overflow-y-scroll rounded-md border border-white/10 bg-black/25 px-2 py-2 font-mono text-[11px]">
+                                    {canvasDiffLines.length === 0 ? (
+                                      <p className="text-white/55">No diff.</p>
+                                    ) : (
+                                      canvasDiffLines.map((line, lineIndex) => (
+                                        <div
+                                          key={`diff-${lineIndex}`}
+                                          className={
+                                            line.kind === "add"
+                                              ? "whitespace-pre-wrap bg-emerald-500/15 text-emerald-100"
+                                              : line.kind === "del"
+                                                ? "whitespace-pre-wrap bg-rose-500/15 text-rose-100"
+                                                : "whitespace-pre-wrap text-white/65"
+                                          }
+                                        >
+                                          {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "} {line.text}
+                                        </div>
+                                      ))
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           )}
                         </>
