@@ -545,6 +545,8 @@ export default function DuetWorkbench() {
   }
 
   function resolveRouting(rawMessage: string, defaultAgents: BridgeAgent[]) {
+    const gptAgent = defaultAgents.find((agent) => agent.provider === "openai");
+    const claudeAgent = defaultAgents.find((agent) => agent.provider === "anthropic");
     const trimmed = rawMessage.trim();
     const match = trimmed.match(/^@(gpt|claude|duet|both)\b[:\s-]*/i);
     if (!match) {
@@ -557,19 +559,35 @@ export default function DuetWorkbench() {
 
     const targetTag = match[1].toLowerCase();
     const userMessage = trimmed.replace(/^@(gpt|claude|duet|both)\b[:\s-]*/i, "").trim() || trimmed;
+    const mentionsGpt = /\B@gpt\b/i.test(userMessage);
+    const mentionsClaude = /\B@claude\b/i.test(userMessage);
 
     if (targetTag === "gpt") {
+      const orderedAgents: BridgeAgent[] = [];
+      if (gptAgent) {
+        orderedAgents.push(gptAgent);
+      }
+      if (mentionsClaude && claudeAgent) {
+        orderedAgents.push(claudeAgent);
+      }
       return {
         userMessage,
-        agents: defaultAgents.filter((agent) => agent.provider === "openai"),
+        agents: orderedAgents.length > 0 ? orderedAgents : defaultAgents.filter((agent) => agent.provider === "openai"),
         target: "gpt" as RoutingTarget,
       };
     }
 
     if (targetTag === "claude") {
+      const orderedAgents: BridgeAgent[] = [];
+      if (claudeAgent) {
+        orderedAgents.push(claudeAgent);
+      }
+      if (mentionsGpt && gptAgent) {
+        orderedAgents.push(gptAgent);
+      }
       return {
         userMessage,
-        agents: defaultAgents.filter((agent) => agent.provider === "anthropic"),
+        agents: orderedAgents.length > 0 ? orderedAgents : defaultAgents.filter((agent) => agent.provider === "anthropic"),
         target: "claude" as RoutingTarget,
       };
     }
@@ -1232,7 +1250,7 @@ export default function DuetWorkbench() {
                 void submitTurn();
               }
             }}
-            placeholder="Ask SCRIBE anything. Prefix with @gpt or @claude, or leave untagged for duet."
+            placeholder="Ask SCRIBE anything. Prefix @gpt/@claude, or nest tags for handoff (e.g. @claude ask @gpt...)."
           />
           <div
             className={`flex gap-2 ${
@@ -1479,7 +1497,7 @@ export default function DuetWorkbench() {
               {!railCollapsed && (
                 <div className="mt-auto border-t border-white/10 px-3 py-3 text-xs text-white/55">
                   <p>Routing</p>
-                  <p className="mt-1 font-mono text-[11px] text-white/75">@gpt / @claude / duet</p>
+                  <p className="mt-1 font-mono text-[11px] text-white/75">@gpt / @claude / duet · nested tag = handoff</p>
                 </div>
               )}
             </aside>
