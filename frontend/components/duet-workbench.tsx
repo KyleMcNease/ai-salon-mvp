@@ -259,8 +259,9 @@ export default function DuetWorkbench() {
   const [pinnedArtifactIds, setPinnedArtifactIds] = useState<string[]>([]);
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [splitCanvasView, setSplitCanvasView] = useState(false);
+  const [pendingTurnStartIndex, setPendingTurnStartIndex] = useState<number | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const transcriptPaneRef = useRef<HTMLDivElement | null>(null);
 
   const sortedMessages = useMemo(() => [...session.messages], [session.messages]);
   const hasResearchUrl = researchUrl.trim().length > 0;
@@ -400,8 +401,25 @@ export default function DuetWorkbench() {
   }, [apiBase, sessionId]);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ block: "end" });
-  }, [sortedMessages.length, isRunning]);
+    if (pendingTurnStartIndex === null) {
+      return;
+    }
+    if (sortedMessages.length <= pendingTurnStartIndex) {
+      return;
+    }
+    const firstAssistantIndex = sortedMessages.findIndex(
+      (item, index) => index >= pendingTurnStartIndex && item.role !== "user"
+    );
+    const targetIndex = firstAssistantIndex >= 0 ? firstAssistantIndex : pendingTurnStartIndex;
+    requestAnimationFrame(() => {
+      const transcriptPane = transcriptPaneRef.current;
+      const target = transcriptPane?.querySelector<HTMLElement>(`[data-msg-index="${targetIndex}"]`);
+      if (target) {
+        target.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+      setPendingTurnStartIndex(null);
+    });
+  }, [pendingTurnStartIndex, sortedMessages]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -711,6 +729,7 @@ ${requestText}`;
       return;
     }
     const routing = resolveRouting(trimmed, activeAgents());
+    setPendingTurnStartIndex(sortedMessages.length);
 
     setIsRunning(true);
     setError(null);
@@ -741,6 +760,7 @@ ${requestText}`;
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Turn failed";
       setError(messageText);
+      setPendingTurnStartIndex(null);
       setAttachStatus("");
     } finally {
       setIsRunning(false);
@@ -754,6 +774,7 @@ ${requestText}`;
     setIsRunning(true);
     setError(null);
     setAttachStatus("");
+    setPendingTurnStartIndex(sortedMessages.length);
     const seed = message.trim();
     const routing = resolveRouting(seed, activeAgents());
     try {
@@ -782,6 +803,7 @@ ${requestText}`;
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Agentic loop failed";
       setError(messageText);
+      setPendingTurnStartIndex(null);
       setAttachStatus("");
     } finally {
       setIsRunning(false);
@@ -1418,7 +1440,7 @@ ${requestText}`;
                   Closed Loop
                 </span>
               </div>
-              <p className="text-[11px] text-[#e8dccd]/70">One shared thread for you, GPT, and Claude.</p>
+              <p className="text-[11px] text-[#e8dccd]/70">One shared thread for you and all your models.</p>
             </div>
             <div className="justify-self-center rounded-full border border-white/12 bg-black/35 px-3 py-1 text-sm text-white/80">
               SCRIBE Duet
@@ -1580,6 +1602,7 @@ ${requestText}`;
                 <>
                   <div
                     className="scrollbar-thin scribe-scroll-ghost scribe-stable-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 lg:px-6"
+                    ref={transcriptPaneRef}
                     tabIndex={0}
                     onKeyDown={handlePaneKeyScroll}
                   >
@@ -1588,6 +1611,7 @@ ${requestText}`;
                         {sortedMessages.map((item, index) => (
                           <article
                             key={`${item.timestamp || "t"}-${index}`}
+                            data-msg-index={index}
                             className={`px-4 py-3 ${
                               index < sortedMessages.length - 1 ? "border-b border-white/10" : ""
                             } ${item.role === "user" ? "bg-amber-500/7" : "bg-transparent"}`}
@@ -1617,6 +1641,7 @@ ${requestText}`;
                       sortedMessages.map((item, index) => (
                         <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
                           <article
+                            data-msg-index={index}
                             className={`max-w-[94%] rounded-2xl border px-4 py-3 ${
                               item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
                             }`}
@@ -1643,7 +1668,6 @@ ${requestText}`;
                         </div>
                       ))
                     )}
-                    <div ref={transcriptEndRef} />
                   </div>
                   {renderComposer()}
                 </>
