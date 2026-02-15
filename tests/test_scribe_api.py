@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict
 
@@ -22,6 +24,25 @@ class StubRouter:
         }
 
 
+def parse_sse_events(raw_stream_text: str) -> list[Dict[str, Any]]:
+    events: list[Dict[str, Any]] = []
+    for block in raw_stream_text.split("\n\n"):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        event_type = "message"
+        data: Dict[str, Any] = {}
+        for line in lines:
+            if line.startswith("event:"):
+                event_type = line.split(":", 1)[1].strip() or "message"
+            elif line.startswith("data:"):
+                payload = line.split(":", 1)[1].strip()
+                if payload:
+                    data = json.loads(payload)
+        events.append({"event": event_type, "data": data})
+    return events
+
+
 @pytest.fixture
 def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(scribe_api_app, "shared_sessions", SharedSessionStore(root=tmp_path / "shared_sessions"))
@@ -35,6 +56,11 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         scribe_api_app,
         "_RESEARCH_HANDOFF_ROOT",
         tmp_path / "research_handoffs",
+    )
+    monkeypatch.setattr(
+        scribe_api_app,
+        "_telemetry_events",
+        deque(maxlen=scribe_api_app._TELEMETRY_MAX_EVENTS),
     )
     return TestClient(scribe_api_app.app)
 
@@ -224,3 +250,92 @@ def test_duet_converse_runs_multi_round_agentic_loop(api_client: TestClient) -> 
     assert len(payload["responses"]) == 4
     assert payload["session"]["messages"][0]["role"] == "user"
     assert payload["session"]["memory"]["summary"]
+
+
+def test_duet_turn_stream_emits_agent_and_session_events(api_client: TestClient) -> None:
+    response = api_client.post(
+        "/api/duet/turn/stream",
+        json={
+            "session_id": "stream-session",
+            "user_message": "stream this turn",
+            "agents": [
+                {"provider": "openai", "model": "gpt-5", "profile_id": "openai:default", "label": "Codex"},
+                {"provider": "anthropic", "model": "opus", "profile_id": "anthropic:default", "label": "Claude"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = parse_sse_events(response.text)
+    event_types = [item["event"] for item in events]
+    assert "status" in event_types
+    assert "agent" in event_types
+    assert "session" in event_types
+    assert "done" in event_types
+
+    session_event = next(item for item in events if item["event"] == "session")
+    session_payload = session_event["data"]["session"]
+    assert session_payload["session_id"] == "stream-session"
+    assert len(session_payload["messages"]) == 3
+    assert session_payload["messages"][0]["role"] == "user"
+
+
+def test_invalid_session_id_rejected_across_endpoints(api_client: TestClient) -> None:
+    turn_response = api_client.post(
+        "/api/duet/turn",
+        json={
+            "session_id": "bad id",
+            "user_message": "hello",
+            "agents": [{"provider": "openai", "model": "gpt-5", "profile_id": "openai:default", "label": "Codex"}],
+        },
+    )
+    assert turn_response.status_code == 400
+    assert "invalid session_id" in turn_response.json()["detail"]
+
+    memory_response = api_client.get("/api/sessions/bad%20id/memory")
+    assert memory_response.status_code == 400
+    assert "invalid session_id" in memory_response.json()["detail"]
+
+    telemetry_response = api_client.get("/api/telemetry/recent?session_id=bad%20id")
+    assert telemetry_response.status_code == 400
+    assert "invalid session_id" in telemetry_response.json()["detail"]
+
+
+def test_degraded_metadata_surfaces_in_session_and_telemetry(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DegradedRouter:
+        def send_message(self, provider: str, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "content": f"degraded-{provider}:{model}",
+                "meta": {
+                    "degraded": True,
+                    "retries": 1,
+                    "latency_ms": 123,
+                    "warnings": ["mock fallback"],
+                    "error": "simulated provider failure",
+                },
+            }
+
+    monkeypatch.setattr(scribe_api_app, "router", DegradedRouter())
+    response = api_client.post(
+        "/api/duet/turn",
+        json={
+            "session_id": "degraded-session",
+            "user_message": "test degraded metadata",
+            "agents": [{"provider": "openai", "model": "gpt-5", "profile_id": "openai:default", "label": "Codex"}],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assistant_message = payload["session"]["messages"][-1]
+    assert assistant_message["meta"]["degraded"] is True
+    assert assistant_message["meta"]["retries"] == 1
+    assert assistant_message["meta"]["warnings"] == ["mock fallback"]
+
+    telemetry_response = api_client.get("/api/telemetry/recent?session_id=degraded-session")
+    assert telemetry_response.status_code == 200
+    telemetry_events = telemetry_response.json()["events"]
+    assert telemetry_events
+    assert telemetry_events[-1]["degraded"] is True
+    assert telemetry_events[-1]["error"] == "simulated provider failure"

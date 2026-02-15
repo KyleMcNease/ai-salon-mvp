@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from scribe_agents.salon.salon_personas import (
@@ -39,6 +42,9 @@ router = ProviderRouter.lazy_default()
 _RESEARCH_HANDOFF_ROOT = Path("data/research_handoffs")
 _PERSONA_VOICE_OVERRIDES_PATH = Path("data/persona_voice_overrides.json")
 _MAX_CONTEXT_MESSAGE_CHARS = 4000
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
+_TELEMETRY_MAX_EVENTS = 500
+_telemetry_events: deque[Dict[str, Any]] = deque(maxlen=_TELEMETRY_MAX_EVENTS)
 
 DEFAULT_OPENAI_MODEL = "gpt-5.2-codex"
 DEFAULT_ANTHROPIC_MODEL = "opus"
@@ -148,8 +154,57 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _require_valid_session_id(session_id: str) -> str:
+    candidate = str(session_id or "").strip()
+    if not _SESSION_ID_RE.fullmatch(candidate):
+        raise ValueError("invalid session_id: use 3-128 chars of letters, numbers, '_' or '-'")
+    return candidate
+
+
 def _workspace_path_for_session(session_id: str) -> str:
-    return str((Path.cwd() / "data" / "workspaces" / session_id).resolve())
+    safe_session_id = _require_valid_session_id(session_id)
+    return str((Path.cwd() / "data" / "workspaces" / safe_session_id).resolve())
+
+
+def _record_telemetry(event: Dict[str, Any]) -> None:
+    payload = dict(event)
+    payload.setdefault("timestamp", _timestamp())
+    _telemetry_events.append(payload)
+
+
+def _record_agent_telemetry(
+    *,
+    session_id: str,
+    route: str,
+    provider: str,
+    model: str,
+    label: str,
+    meta: Dict[str, Any],
+    round_index: Optional[int] = None,
+) -> None:
+    _record_telemetry(
+        {
+            "event_type": "agent_turn",
+            "session_id": session_id,
+            "route": route,
+            "provider": provider,
+            "model": model,
+            "label": label,
+            "round": round_index,
+            "latency_ms": meta.get("latency_ms"),
+            "retries": meta.get("retries", 0),
+            "attempt": meta.get("attempt", 1),
+            "degraded": bool(meta.get("degraded")),
+            "bridge": meta.get("bridge"),
+            "profile_id": meta.get("profile_id"),
+            "error": meta.get("error"),
+            "warnings": meta.get("warnings") or [],
+        }
+    )
+
+
+def _sse(event_type: str, payload: Dict[str, Any]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
 
 
 def _default_bridge_agents() -> List[BridgeAgentRequest]:
@@ -346,6 +401,7 @@ def _run_duet_turn(
     system_prompt: Optional[str],
     agents: List[BridgeAgentRequest],
 ) -> Dict[str, Any]:
+    session_id = _require_valid_session_id(session_id)
     trimmed_message = user_message.strip()
     if not trimmed_message:
         raise ValueError("user_message must not be empty")
@@ -393,10 +449,94 @@ def _run_duet_turn(
         }
         history.append(response_message)
         responses.append(response_message)
+        _record_agent_telemetry(
+            session_id=session_id,
+            route="turn",
+            provider=agent.provider,
+            model=agent.model,
+            label=agent.label or agent.provider,
+            meta=response_message["meta"] if isinstance(response_message.get("meta"), dict) else {},
+        )
 
     updated_memory = _auto_memory_after_turn(memory, user_message=trimmed_message, responses=responses)
     saved = shared_sessions.save(session_id, history, memory=updated_memory)
     return {"session": saved, "responses": responses}
+
+
+def _run_duet_turn_stream(
+    *,
+    session_id: str,
+    user_message: str,
+    system_prompt: Optional[str],
+    agents: List[BridgeAgentRequest],
+):
+    session_id = _require_valid_session_id(session_id)
+    trimmed_message = user_message.strip()
+    if not trimmed_message:
+        raise ValueError("user_message must not be empty")
+    if not agents:
+        raise ValueError("at least one agent is required")
+
+    state = shared_sessions.load(session_id)
+    history = list(state.get("messages") or [])
+    memory = _normalize_session_memory(state.get("memory"))
+    user_item = {
+        "role": "user",
+        "speaker": "user",
+        "content": trimmed_message,
+        "timestamp": _timestamp(),
+    }
+    history.append(user_item)
+    yield _sse("status", {"message": "running", "session_id": session_id})
+
+    responses: List[Dict[str, Any]] = []
+    for index, agent in enumerate(agents):
+        yield _sse(
+            "status",
+            {
+                "message": "agent_start",
+                "agent_index": index,
+                "agent": {"provider": agent.provider, "model": agent.model, "label": agent.label or agent.provider},
+            },
+        )
+        agent_payload = {
+            "messages": _to_llm_messages(history),
+            "system": _compose_system_prompt(system_prompt, memory),
+            "context": {
+                "session_id": session_id,
+                "agent_label": agent.label or agent.provider,
+                "shared_memory": memory,
+            },
+            "profile_id": agent.profile_id,
+            "options": {"temperature": 0.4},
+        }
+        result = router.send_message(agent.provider, agent.model, agent_payload)
+        content = str(result.get("content") or "").strip() or "[empty response]"
+        response_message = {
+            "role": "assistant",
+            "speaker": agent.label or f"{agent.provider}:{agent.model}",
+            "provider": agent.provider,
+            "model": agent.model,
+            "content": content,
+            "meta": result.get("meta") or {},
+            "timestamp": _timestamp(),
+        }
+        history.append(response_message)
+        responses.append(response_message)
+        _record_agent_telemetry(
+            session_id=session_id,
+            route="turn_stream",
+            provider=agent.provider,
+            model=agent.model,
+            label=agent.label or agent.provider,
+            meta=response_message["meta"] if isinstance(response_message.get("meta"), dict) else {},
+        )
+        yield _sse("agent", {"agent_index": index, "message": response_message})
+
+    updated_memory = _auto_memory_after_turn(memory, user_message=trimmed_message, responses=responses)
+    saved = shared_sessions.save(session_id, history, memory=updated_memory)
+    yield _sse("session", {"session": saved, "responses": responses})
+    yield _sse("done", {"ok": True})
 
 
 def _run_agentic_conversation(
@@ -407,6 +547,7 @@ def _run_agentic_conversation(
     agents: List[BridgeAgentRequest],
     rounds: int,
 ) -> Dict[str, Any]:
+    session_id = _require_valid_session_id(session_id)
     if rounds < 1:
         raise ValueError("rounds must be >= 1")
     if not agents:
@@ -461,6 +602,15 @@ def _run_agentic_conversation(
             }
             history.append(response_message)
             responses.append(response_message)
+            _record_agent_telemetry(
+                session_id=session_id,
+                route="converse",
+                provider=agent.provider,
+                model=agent.model,
+                label=agent.label or agent.provider,
+                meta=response_message["meta"] if isinstance(response_message.get("meta"), dict) else {},
+                round_index=round_index + 1,
+            )
 
     updated_memory = _auto_memory_after_turn(memory, user_message=cleaned_seed or None, responses=responses)
     saved = shared_sessions.save(session_id, history, memory=updated_memory)
@@ -473,6 +623,7 @@ def _run_agentic_conversation(
 
 
 def _truncate_last_user_turn(session_id: str) -> Dict[str, Any]:
+    session_id = _require_valid_session_id(session_id)
     state = shared_sessions.load(session_id)
     history = list(state.get("messages") or [])
     last_user_index = -1
@@ -486,6 +637,7 @@ def _truncate_last_user_turn(session_id: str) -> Dict[str, Any]:
 
 
 def _session_events(session_id: str) -> List[Dict[str, Any]]:
+    session_id = _require_valid_session_id(session_id)
     state = shared_sessions.load(session_id)
     history = list(state.get("messages") or [])
     workspace_dir = _workspace_path_for_session(session_id)
@@ -570,6 +722,7 @@ def _append_research_message(
     artifacts: List[Dict[str, Any]],
     raw: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    session_id = _require_valid_session_id(session_id)
     state = shared_sessions.load(session_id)
     history = list(state.get("messages") or [])
     lines: List[str] = []
@@ -615,7 +768,8 @@ def _handoff_path(handoff_id: str) -> Path:
 
 
 def _create_research_handoff(payload: ResearchHandoffCreateRequest) -> Dict[str, Any]:
-    session = shared_sessions.load(payload.session_id)
+    safe_session_id = _require_valid_session_id(payload.session_id)
+    session = shared_sessions.load(safe_session_id)
     history = list(session.get("messages") or [])
     memory = _normalize_session_memory(session.get("memory"))
     recent = history[-payload.include_recent_messages :] if payload.include_recent_messages else []
@@ -628,7 +782,7 @@ def _create_research_handoff(payload: ResearchHandoffCreateRequest) -> Dict[str,
     handoff_id = str(uuid.uuid4())
     handoff_payload = {
         "handoff_id": handoff_id,
-        "session_id": payload.session_id,
+        "session_id": safe_session_id,
         "mode": payload.mode or "hybrid",
         "query": inferred_query,
         "created_at": _timestamp(),
@@ -734,16 +888,24 @@ def update_persona_voice(persona_id: str, payload: PersonaVoiceUpdate) -> dict[s
 def get_shared_session(session_id: str) -> dict[str, Any]:
     """Fetch shared state for a duet session."""
 
-    return shared_sessions.load(session_id)
+    try:
+        safe_session_id = _require_valid_session_id(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return shared_sessions.load(safe_session_id)
 
 
 @app.get("/api/sessions/{session_id}/memory")
 def get_session_memory(session_id: str) -> dict[str, Any]:
     """Fetch durable shared memory for a session."""
 
-    state = shared_sessions.load(session_id)
+    try:
+        safe_session_id = _require_valid_session_id(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state = shared_sessions.load(safe_session_id)
     return {
-        "session_id": session_id,
+        "session_id": safe_session_id,
         "memory": _normalize_session_memory(state.get("memory")),
     }
 
@@ -752,8 +914,12 @@ def get_session_memory(session_id: str) -> dict[str, Any]:
 def update_session_memory(session_id: str, payload: SessionMemoryUpdate) -> dict[str, Any]:
     """Update durable shared memory for a session."""
 
+    try:
+        safe_session_id = _require_valid_session_id(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     updated = shared_sessions.update_memory(
-        session_id,
+        safe_session_id,
         summary=payload.summary,
         key_facts=payload.key_facts,
         user_preferences=payload.user_preferences,
@@ -761,7 +927,7 @@ def update_session_memory(session_id: str, payload: SessionMemoryUpdate) -> dict
         merge=payload.merge,
     )
     return {
-        "session_id": session_id,
+        "session_id": safe_session_id,
         "memory": _normalize_session_memory(updated.get("memory")),
     }
 
@@ -770,14 +936,36 @@ def update_session_memory(session_id: str, payload: SessionMemoryUpdate) -> dict
 def get_shared_session_events(session_id: str) -> dict[str, Any]:
     """Build replay events from shared duet state for legacy UI playback."""
 
-    return {"events": _session_events(session_id)}
+    try:
+        safe_session_id = _require_valid_session_id(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"events": _session_events(safe_session_id)}
+
+
+@app.get("/api/telemetry/recent")
+def get_recent_telemetry(limit: int = 50, session_id: Optional[str] = None) -> dict[str, Any]:
+    """Return recent runtime telemetry for diagnostics."""
+
+    safe_limit = max(1, min(500, int(limit)))
+    events = list(_telemetry_events)
+    if session_id:
+        try:
+            safe_session_id = _require_valid_session_id(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        events = [event for event in events if str(event.get("session_id") or "") == safe_session_id]
+    return {"events": events[-safe_limit:]}
 
 
 @app.post("/api/research/handoff")
 def create_research_handoff(payload: ResearchHandoffCreateRequest) -> dict[str, Any]:
     """Create a portable research handoff packet from current SCRIBE state."""
 
-    handoff_payload = _create_research_handoff(payload)
+    try:
+        handoff_payload = _create_research_handoff(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"handoff": handoff_payload}
 
 
@@ -805,16 +993,19 @@ def ingest_research_result(payload: ResearchIngestRequest) -> dict[str, Any]:
     if not (has_summary or has_findings or has_artifacts):
         raise HTTPException(status_code=400, detail="Provide summary, findings, or artifacts")
 
-    return _append_research_message(
-        session_id=payload.session_id,
-        source=payload.source,
-        mode=payload.mode,
-        title=payload.title,
-        summary=payload.summary,
-        findings=payload.findings,
-        artifacts=payload.artifacts,
-        raw=payload.raw,
-    )
+    try:
+        return _append_research_message(
+            session_id=payload.session_id,
+            source=payload.source,
+            mode=payload.mode,
+            title=payload.title,
+            summary=payload.summary,
+            findings=payload.findings,
+            artifacts=payload.artifacts,
+            raw=payload.raw,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/duet/turn")
@@ -830,6 +1021,34 @@ def duet_turn(payload: DuetTurnRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/duet/turn/stream")
+def duet_turn_stream(payload: DuetTurnRequest) -> StreamingResponse:
+    """Run one shared-state turn and stream agent outputs as SSE events."""
+
+    def event_source():
+        try:
+            yield from _run_duet_turn_stream(
+                session_id=payload.session_id,
+                user_message=payload.user_message,
+                system_prompt=payload.system_prompt,
+                agents=payload.agents,
+            )
+        except ValueError as exc:
+            yield _sse("error", {"detail": str(exc)})
+        except Exception as exc:  # pragma: no cover - defensive streaming fallback
+            yield _sse("error", {"detail": f"{type(exc).__name__}: {exc}"})
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/duet/converse")
@@ -854,12 +1073,18 @@ async def websocket_bridge(websocket: WebSocket) -> None:
 
     await websocket.accept()
     query_params = websocket.query_params
-    session_id = (
+    session_id_raw = (
         query_params.get("session_uuid")
         or query_params.get("id")
         or query_params.get("session_id")
         or f"session-{uuid.uuid4()}"
     )
+    try:
+        session_id = _require_valid_session_id(session_id_raw)
+    except ValueError:
+        await _ws_send(websocket, "error", {"message": "invalid session_id"})
+        await websocket.close(code=1008)
+        return
     workspace_path = _workspace_path_for_session(session_id)
     current_system_prompt = ""
     current_agents = _default_bridge_agents()

@@ -1,6 +1,6 @@
 "use client";
 
-import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Cinzel, IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 
 type SessionMessage = {
@@ -9,6 +9,7 @@ type SessionMessage = {
   content: string;
   provider?: string;
   model?: string;
+  meta?: Record<string, unknown>;
   timestamp?: string;
 };
 
@@ -69,6 +70,25 @@ type ArtifactDoc = {
   versions: ArtifactVersion[];
 };
 type DiffLine = { kind: "same" | "add" | "del"; text: string };
+type TelemetryEvent = {
+  timestamp?: string;
+  event_type?: string;
+  session_id?: string;
+  route?: string;
+  provider?: string;
+  model?: string;
+  label?: string;
+  latency_ms?: number;
+  retries?: number;
+  attempt?: number;
+  degraded?: boolean;
+  error?: string;
+  warnings?: string[];
+};
+type SseEvent = {
+  type: string;
+  data: Record<string, unknown>;
+};
 type UiPrefs = {
   quickMode: boolean;
   transcriptMode: TranscriptMode;
@@ -199,6 +219,54 @@ function safeBuildUrl(base: string, params: Record<string, string>): string {
   }
 }
 
+function parseSseChunks(buffer: string): { events: SseEvent[]; rest: string } {
+  const parts = buffer.split("\n\n");
+  const rest = parts.pop() ?? "";
+  const events: SseEvent[] = [];
+  for (const part of parts) {
+    const lines = part.split("\n");
+    let eventType = "message";
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        eventType = line.slice(6).trim() || "message";
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+    if (dataLines.length === 0) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+      events.push({ type: eventType, data: parsed });
+    } catch {
+      continue;
+    }
+  }
+  return { events, rest };
+}
+
+function messageMeta(item: SessionMessage): {
+  degraded: boolean;
+  warnings: string[];
+  error: string | null;
+  latencyMs: number | null;
+  retries: number | null;
+} {
+  const raw = item.meta;
+  const meta = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    degraded: Boolean(meta.degraded),
+    warnings: Array.isArray(meta.warnings)
+      ? meta.warnings.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [],
+    error: typeof meta.error === "string" && meta.error.trim() ? meta.error : null,
+    latencyMs: typeof meta.latency_ms === "number" ? meta.latency_ms : null,
+    retries: typeof meta.retries === "number" ? meta.retries : null,
+  };
+}
+
 export default function DuetWorkbench() {
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const researchAppDefault = process.env.NEXT_PUBLIC_RESEARCH_APP_URL || "";
@@ -240,6 +308,8 @@ export default function DuetWorkbench() {
   const [memoryPrefsInput, setMemoryPrefsInput] = useState("");
   const [memoryNotesInput, setMemoryNotesInput] = useState("");
   const [memoryStatus, setMemoryStatus] = useState("");
+  const [telemetryEvents, setTelemetryEvents] = useState<TelemetryEvent[]>([]);
+  const [telemetryStatus, setTelemetryStatus] = useState("");
   const [profiles, setProfiles] = useState<ProviderProfile[]>([]);
   const [openaiProfile, setOpenaiProfile] = useState("openai:default");
   const [anthropicProfile, setAnthropicProfile] = useState("anthropic:default");
@@ -420,6 +490,19 @@ export default function DuetWorkbench() {
       setPendingTurnStartIndex(null);
     });
   }, [pendingTurnStartIndex, sortedMessages]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+    const transcriptPane = transcriptPaneRef.current;
+    if (!transcriptPane) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      transcriptPane.scrollTo({ top: transcriptPane.scrollHeight, behavior: "smooth" });
+    });
+  }, [isRunning, sortedMessages.length]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -737,26 +820,152 @@ ${requestText}`;
 
     try {
       const userMessage = await composeMessageWithAttachments(routing.userMessage);
-      const response = await fetch(`${apiBase}/api/duet/turn`, {
+      const requestBody = {
+        session_id: sessionId,
+        user_message: userMessage,
+        system_prompt: systemPrompt,
+        agents: routing.agents,
+      };
+      const response = await fetch(`${apiBase}/api/duet/turn/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId,
-          user_message: userMessage,
-          system_prompt: systemPrompt,
-          agents: routing.agents,
-        }),
+        body: JSON.stringify(requestBody),
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || `Request failed (${response.status})`);
       }
-      const payload = (await response.json()) as { session: SessionPayload };
-      setSession(payload.session);
-      setMemory(normalizeMemory(payload.session.memory));
+      if (!response.body) {
+        const fallbackResponse = await fetch(`${apiBase}/api/duet/turn`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+        if (!fallbackResponse.ok) {
+          const payload = await fallbackResponse.json().catch(() => ({}));
+          throw new Error(payload.detail || `Request failed (${fallbackResponse.status})`);
+        }
+        const payload = (await fallbackResponse.json()) as { session: SessionPayload };
+        setSession(payload.session);
+        setMemory(normalizeMemory(payload.session.memory));
+        setMessage("");
+        setAttachedFiles([]);
+        setAttachStatus("");
+        void refreshTelemetry();
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const optimisticUserMessage: SessionMessage = {
+        role: "user",
+        speaker: "user",
+        content: userMessage,
+        timestamp: nowIso,
+      };
+      setSession((previous) => ({
+        ...previous,
+        session_id: sessionId,
+        messages: [...previous.messages, optimisticUserMessage],
+        updated_at: nowIso,
+      }));
       setMessage("");
       setAttachedFiles([]);
+      setAttachStatus("Running duet...");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let chunkBuffer = "";
+      let sawSessionPayload = false;
+      let streamDone = false;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        chunkBuffer += decoder.decode(value, { stream: true });
+        const parsed = parseSseChunks(chunkBuffer);
+        chunkBuffer = parsed.rest;
+        for (const event of parsed.events) {
+          if (event.type === "status") {
+            const statusMessage = typeof event.data.message === "string" ? event.data.message : "";
+            if (statusMessage === "agent_start" && typeof event.data.agent === "object" && event.data.agent) {
+              const agent = event.data.agent as Record<string, unknown>;
+              const label =
+                typeof agent.label === "string" && agent.label.trim()
+                  ? agent.label
+                  : `${String(agent.provider || "agent")}:${String(agent.model || "")}`;
+              setAttachStatus(`Running ${label}...`);
+            } else if (statusMessage === "running") {
+              setAttachStatus("Running duet...");
+            }
+            continue;
+          }
+
+          if (event.type === "agent") {
+            const streamedMessage = event.data.message;
+            if (streamedMessage && typeof streamedMessage === "object") {
+              setSession((previous) => ({
+                ...previous,
+                session_id: sessionId,
+                messages: [...previous.messages, streamedMessage as SessionMessage],
+              }));
+            }
+            continue;
+          }
+
+          if (event.type === "session") {
+            const streamedSession = event.data.session;
+            if (streamedSession && typeof streamedSession === "object") {
+              const payloadSession = streamedSession as SessionPayload;
+              setSession(payloadSession);
+              setMemory(normalizeMemory(payloadSession.memory));
+              sawSessionPayload = true;
+            }
+            continue;
+          }
+
+          if (event.type === "done") {
+            streamDone = true;
+            continue;
+          }
+
+          if (event.type === "error") {
+            const detail =
+              typeof event.data.detail === "string" && event.data.detail.trim()
+                ? event.data.detail
+                : "Streaming turn failed";
+            throw new Error(detail);
+          }
+        }
+      }
+
+      if (chunkBuffer.trim()) {
+        const parsedTail = parseSseChunks(`${chunkBuffer}\n\n`);
+        for (const event of parsedTail.events) {
+          if (event.type === "session") {
+            const streamedSession = event.data.session;
+            if (streamedSession && typeof streamedSession === "object") {
+              const payloadSession = streamedSession as SessionPayload;
+              setSession(payloadSession);
+              setMemory(normalizeMemory(payloadSession.memory));
+              sawSessionPayload = true;
+            }
+          } else if (event.type === "error") {
+            const detail =
+              typeof event.data.detail === "string" && event.data.detail.trim()
+                ? event.data.detail
+                : "Streaming turn failed";
+            throw new Error(detail);
+          }
+        }
+      }
+
       setAttachStatus("");
+      if (!streamDone || !sawSessionPayload) {
+        await loadSession(sessionId);
+      }
+      void refreshTelemetry();
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Turn failed";
       setError(messageText);
@@ -800,6 +1009,7 @@ ${requestText}`;
       setMessage("");
       setAttachedFiles([]);
       setAttachStatus("");
+      void refreshTelemetry();
     } catch (err) {
       const messageText = err instanceof Error ? err.message : "Agentic loop failed";
       setError(messageText);
@@ -855,6 +1065,31 @@ ${requestText}`;
       setMemoryStatus(err instanceof Error ? err.message : "Unable to save memory");
     }
   }
+
+  const refreshTelemetry = useCallback(async () => {
+    setTelemetryStatus("Loading telemetry...");
+    try {
+      const response = await fetch(`${apiBase}/api/telemetry/recent?limit=40&session_id=${encodeURIComponent(sessionId)}`);
+      if (!response.ok) {
+        throw new Error(`Unable to load telemetry (${response.status})`);
+      }
+      const payload = (await response.json()) as { events?: TelemetryEvent[] };
+      setTelemetryEvents(Array.isArray(payload.events) ? payload.events : []);
+      setTelemetryStatus("Telemetry refreshed.");
+    } catch (err) {
+      setTelemetryStatus(err instanceof Error ? err.message : "Unable to load telemetry");
+    }
+  }, [apiBase, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) {
+      return;
+    }
+    if (sidePanel !== "advanced") {
+      return;
+    }
+    void refreshTelemetry();
+  }, [sessionId, sidePanel, refreshTelemetry]);
 
   async function createResearchHandoff() {
     setHandoffStatus("Creating handoff...");
@@ -1608,65 +1843,111 @@ ${requestText}`;
                   >
                     {transcriptMode === "single" ? (
                       <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-white/15 bg-black/25">
-                        {sortedMessages.map((item, index) => (
-                          <article
-                            key={`${item.timestamp || "t"}-${index}`}
-                            data-msg-index={index}
-                            className={`px-4 py-3 ${
-                              index < sortedMessages.length - 1 ? "border-b border-white/10" : ""
-                            } ${item.role === "user" ? "bg-amber-500/7" : "bg-transparent"}`}
-                          >
-                            <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
-                              <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
-                              <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
-                                {messageRouteTag(item)}
-                              </span>
-                              <span className="font-mono">{item.model || item.role}</span>
-                            </div>
-                            <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
-                            {item.role !== "user" && (
-                              <div className="mt-3 flex items-center justify-end">
-                                <button
-                                  onClick={() => createArtifactFromMessage(item, index)}
-                                  className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
-                                >
-                                  Open in Canvas
-                                </button>
+                        {sortedMessages.map((item, index) => {
+                          const meta = messageMeta(item);
+                          return (
+                            <article
+                              key={`${item.timestamp || "t"}-${index}`}
+                              data-msg-index={index}
+                              className={`px-4 py-3 ${
+                                index < sortedMessages.length - 1 ? "border-b border-white/10" : ""
+                              } ${item.role === "user" ? "bg-amber-500/7" : "bg-transparent"}`}
+                            >
+                              <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
+                                <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
+                                <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
+                                  {messageRouteTag(item)}
+                                </span>
+                                <span className="font-mono">{item.model || item.role}</span>
+                                {meta.degraded && (
+                                  <span className="rounded-full border border-amber-300/60 bg-amber-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">
+                                    Degraded
+                                  </span>
+                                )}
+                                {meta.retries && meta.retries > 0 && (
+                                  <span className="rounded-full border border-white/20 px-2 py-0.5 text-[10px] text-white/70">
+                                    retries {meta.retries}
+                                  </span>
+                                )}
+                                {meta.latencyMs !== null && (
+                                  <span className="rounded-full border border-white/20 px-2 py-0.5 text-[10px] text-white/70">
+                                    {meta.latencyMs}ms
+                                  </span>
+                                )}
                               </div>
-                            )}
-                          </article>
-                        ))}
+                              <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
+                              {(meta.error || meta.warnings.length > 0) && (
+                                <div className="mt-2 rounded-md border border-amber-300/35 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100/90">
+                                  {meta.error ? `Error: ${meta.error}` : `Warnings: ${meta.warnings.join(" | ")}`}
+                                </div>
+                              )}
+                              {item.role !== "user" && (
+                                <div className="mt-3 flex items-center justify-end">
+                                  <button
+                                    onClick={() => createArtifactFromMessage(item, index)}
+                                    className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                                  >
+                                    Open in Canvas
+                                  </button>
+                                </div>
+                              )}
+                            </article>
+                          );
+                        })}
                       </div>
                     ) : (
-                      sortedMessages.map((item, index) => (
-                        <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
-                          <article
-                            data-msg-index={index}
-                            className={`max-w-[94%] rounded-2xl border px-4 py-3 ${
-                              item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
-                            }`}
-                          >
-                            <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
-                              <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
-                              <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
-                                {messageRouteTag(item)}
-                              </span>
-                              <span className="font-mono">{item.model || item.role}</span>
-                            </div>
-                            <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
-                            {item.role !== "user" && (
-                              <div className="mt-3 flex items-center justify-end">
-                                <button
-                                  onClick={() => createArtifactFromMessage(item, index)}
-                                  className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
-                                >
-                                  Open in Canvas
-                                </button>
+                      sortedMessages.map((item, index) => {
+                        const meta = messageMeta(item);
+                        return (
+                          <div key={`${item.timestamp || "t"}-${index}`} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
+                            <article
+                              data-msg-index={index}
+                              className={`max-w-[94%] rounded-2xl border px-4 py-3 ${
+                                item.role === "user" ? "border-amber-300/40 bg-amber-500/12" : "border-white/15 bg-white/5"
+                              }`}
+                            >
+                              <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-white/60">
+                                <span>{item.speaker || (item.role === "user" ? "You" : "Assistant")}</span>
+                                <span className="rounded-full border border-white/20 px-2 py-0.5 font-mono text-[10px] text-white/75">
+                                  {messageRouteTag(item)}
+                                </span>
+                                <span className="font-mono">{item.model || item.role}</span>
+                                {meta.degraded && (
+                                  <span className="rounded-full border border-amber-300/60 bg-amber-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">
+                                    Degraded
+                                  </span>
+                                )}
+                                {meta.retries && meta.retries > 0 && (
+                                  <span className="rounded-full border border-white/20 px-2 py-0.5 text-[10px] text-white/70">
+                                    retries {meta.retries}
+                                  </span>
+                                )}
+                                {meta.latencyMs !== null && (
+                                  <span className="rounded-full border border-white/20 px-2 py-0.5 text-[10px] text-white/70">
+                                    {meta.latencyMs}ms
+                                  </span>
+                                )}
                               </div>
-                            )}
-                          </article>
-                        </div>
-                      ))
+                              <p className="whitespace-pre-wrap text-base leading-relaxed text-white/90">{item.content}</p>
+                              {(meta.error || meta.warnings.length > 0) && (
+                                <div className="mt-2 rounded-md border border-amber-300/35 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100/90">
+                                  {meta.error ? `Error: ${meta.error}` : `Warnings: ${meta.warnings.join(" | ")}`}
+                                </div>
+                              )}
+                              {item.role !== "user" && (
+                                <div className="mt-3 flex items-center justify-end">
+                                  <button
+                                    onClick={() => createArtifactFromMessage(item, index)}
+                                    className="rounded-md border border-white/20 px-2 py-1 text-[11px] transition hover:border-amber-300 hover:text-amber-100"
+                                  >
+                                    Open in Canvas
+                                  </button>
+                                </div>
+                              )}
+                            </article>
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                   {renderComposer()}
@@ -2102,6 +2383,62 @@ ${requestText}`;
                               )}
                             </select>
                           </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <h4 className="text-sm font-semibold uppercase tracking-wider text-stone-200">Runtime Diagnostics</h4>
+                          <button
+                            className="rounded-lg border border-white/20 px-3 py-1.5 text-xs transition hover:border-amber-300 hover:text-amber-200"
+                            onClick={() => void refreshTelemetry()}
+                          >
+                            Refresh
+                          </button>
+                        </div>
+                        <p className="mt-2 text-xs text-white/55">
+                          {telemetryStatus || "Recent agent turns for this session."}
+                        </p>
+                        <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1 scribe-scroll-ghost">
+                          {telemetryEvents.length === 0 ? (
+                            <div className="rounded-lg border border-dashed border-white/15 p-3 text-xs text-white/55">
+                              No telemetry events yet.
+                            </div>
+                          ) : (
+                            telemetryEvents
+                              .slice()
+                              .reverse()
+                              .map((event, index) => (
+                                <div key={`${event.timestamp || "t"}-${event.provider || "provider"}-${index}`} className="rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs">
+                                  <div className="flex flex-wrap items-center gap-2 text-white/75">
+                                    <span>{event.label || event.provider || "agent"}</span>
+                                    <span className="font-mono text-white/60">{event.model || "model"}</span>
+                                    <span className="font-mono text-white/55">{event.route || "route"}</span>
+                                    {event.degraded && (
+                                      <span className="rounded-full border border-amber-300/60 bg-amber-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">
+                                        Degraded
+                                      </span>
+                                    )}
+                                    {typeof event.retries === "number" && event.retries > 0 && (
+                                      <span className="rounded-full border border-white/20 px-2 py-0.5 text-[10px] text-white/70">
+                                        retries {event.retries}
+                                      </span>
+                                    )}
+                                    {typeof event.latency_ms === "number" && (
+                                      <span className="rounded-full border border-white/20 px-2 py-0.5 text-[10px] text-white/70">
+                                        {event.latency_ms}ms
+                                      </span>
+                                    )}
+                                  </div>
+                                  {(event.error || (Array.isArray(event.warnings) && event.warnings.length > 0)) && (
+                                    <p className="mt-1 text-[11px] text-amber-100/90">
+                                      {event.error ? `Error: ${event.error}` : `Warnings: ${event.warnings?.join(" | ")}`}
+                                    </p>
+                                  )}
+                                  {event.timestamp && <p className="mt-1 text-[10px] text-white/45">{event.timestamp}</p>}
+                                </div>
+                              ))
+                          )}
                         </div>
                       </div>
                     </div>

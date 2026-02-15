@@ -3,18 +3,46 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 
 class SharedSessionStore:
-    """Persist shared conversation history in local JSON files."""
+    """Persist shared conversation history in SQLite with WAL and safe transactions."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, *, db_path: Path | None = None) -> None:
         self.root = root or Path("data/shared_sessions")
+        self.db_path = db_path or (self.root / "sessions.sqlite3")
+        self._lock = threading.RLock()
+        self._init_db()
 
-    def _path(self, session_id: str) -> Path:
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+        return conn
+
+    def _init_db(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    messages_json TEXT NOT NULL,
+                    memory_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+    def _legacy_json_path(self, session_id: str) -> Path:
         return self.root / f"{session_id}.json"
 
     def _default_memory(self) -> Dict[str, Any]:
@@ -46,36 +74,75 @@ class SharedSessionStore:
             base["updated_at"] = updated_at
         return base
 
-    def load(self, session_id: str) -> Dict[str, Any]:
-        path = self._path(session_id)
+    def _default_payload(self, session_id: str) -> Dict[str, Any]:
+        return {
+            "session_id": session_id,
+            "messages": [],
+            "memory": self._default_memory(),
+            "updated_at": None,
+        }
+
+    def _deserialize_row(self, session_id: str, row: sqlite3.Row) -> Dict[str, Any]:
+        try:
+            messages = json.loads(str(row["messages_json"]))
+            memory = json.loads(str(row["memory_json"]))
+        except Exception:
+            return self._default_payload(session_id)
+
+        if not isinstance(messages, list):
+            messages = []
+
+        return {
+            "session_id": session_id,
+            "messages": messages,
+            "memory": self._normalize_memory(memory),
+            "updated_at": row["updated_at"],
+        }
+
+    def _load_legacy_json(self, session_id: str) -> Dict[str, Any] | None:
+        path = self._legacy_json_path(session_id)
         if not path.exists():
-            return {
-                "session_id": session_id,
-                "messages": [],
-                "memory": self._default_memory(),
-                "updated_at": None,
-            }
+            return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            return {
-                "session_id": session_id,
-                "messages": [],
-                "memory": self._default_memory(),
-                "updated_at": None,
-            }
+            return None
         if not isinstance(payload, dict):
-            return {
-                "session_id": session_id,
-                "messages": [],
-                "memory": self._default_memory(),
-                "updated_at": None,
-            }
-        payload.setdefault("session_id", session_id)
-        payload.setdefault("messages", [])
-        payload["memory"] = self._normalize_memory(payload.get("memory"))
-        payload.setdefault("updated_at", None)
-        return payload
+            return None
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            messages = []
+        memory = self._normalize_memory(payload.get("memory"))
+        updated_at = payload.get("updated_at")
+        normalized = {
+            "session_id": session_id,
+            "messages": messages,
+            "memory": memory,
+            "updated_at": updated_at if isinstance(updated_at, str) else None,
+        }
+        return normalized
+
+    def load(self, session_id: str) -> Dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT session_id, messages_json, memory_json, updated_at FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is not None:
+                return self._deserialize_row(session_id, row)
+
+        legacy = self._load_legacy_json(session_id)
+        if legacy is not None:
+            self.save(session_id, list(legacy.get("messages") or []), memory=legacy.get("memory"))
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "SELECT session_id, messages_json, memory_json, updated_at FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is not None:
+                    return self._deserialize_row(session_id, row)
+
+        return self._default_payload(session_id)
 
     def save(
         self,
@@ -84,17 +151,35 @@ class SharedSessionStore:
         *,
         memory: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        self.root.mkdir(parents=True, exist_ok=True)
         existing = self.load(session_id)
         effective_memory = self._normalize_memory(memory if memory is not None else existing.get("memory"))
-        effective_memory["updated_at"] = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+        effective_memory["updated_at"] = now
         payload = {
             "session_id": session_id,
-            "messages": messages,
+            "messages": messages if isinstance(messages, list) else [],
             "memory": effective_memory,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": now,
         }
-        self._path(session_id).write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions(session_id, messages_json, memory_json, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    messages_json = excluded.messages_json,
+                    memory_json = excluded.memory_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    session_id,
+                    json.dumps(payload["messages"], ensure_ascii=True),
+                    json.dumps(payload["memory"], ensure_ascii=True),
+                    now,
+                ),
+            )
+
         return payload
 
     def append(self, session_id: str, message: Dict[str, Any]) -> Dict[str, Any]:
